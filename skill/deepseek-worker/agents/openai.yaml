@@ -1,0 +1,7 @@
+interface:
+  display_name: "DeepSeek Worker"
+  short_description: "Delegate bounded work to DeepSeek V4 Flash"
+  default_prompt: "Use $deepseek-worker for this bounded task, choosing audit, implement, or quota-first from the request and risk."
+
+policy:
+  allow_implicit_invocation: false

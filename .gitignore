@@ -1,0 +1,30 @@
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+
+# PowerShell
+*.ps1~
+
+# Local artifacts
+runs/
+*.log
+*.tmp
+
+# Secrets - never commit
+**/deepseek-api-key.txt
+**/*.key
+**/*.pem
+**/*.pfx
+
+# Installed local config copies
+deepseek-worker.config.toml
+models.json

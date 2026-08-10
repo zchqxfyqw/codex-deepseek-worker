@@ -1,0 +1,59 @@
+# DeepSeek Worker profile for Codex CLI.
+# Install-DeepSeekWorker.ps1 writes this as $CODEX_HOME/deepseek-worker.config.toml
+# and replaces {{MODEL_CATALOG_PATH}} with the installed model catalog path.
+# This file only affects the `deepseek-worker` profile; it does not change your default Codex model.
+
+model = "deepseek-v4-flash"
+model_provider = "deepseek-worker-secure"
+model_reasoning_effort = "xhigh"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+model_auto_compact_token_limit_scope = "body_after_prefix"
+model_catalog_json = "{{MODEL_CATALOG_PATH}}"
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+notify = []
+
+[model_providers.deepseek-worker-secure]
+name = "deepseek"
+base_url = "https://api.deepseek.com/"
+wire_api = "responses"
+env_key = "DEEPSEEK_API_KEY"
+
+[sandbox_workspace_write]
+network_access = false
+
+[windows]
+sandbox = "unelevated"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+exporter = "none"
+metrics_exporter = "none"
+trace_exporter = "none"
+log_user_prompt = false
+
+[shell_environment_policy]
+ignore_default_excludes = false
+
+[agents]
+enabled = false
+
+[memories]
+generate_memories = false
+use_memories = false
+
+[features]
+apps = false
+plugins = false
+remote_plugin = false
+plugin_sharing = false
+recommended_plugins = false
+memories = false
+multi_agent = false

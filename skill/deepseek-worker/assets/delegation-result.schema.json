@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["completed", "partial", "blocked"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "changed_files": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "claimed_verification": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "risks_or_followups": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "changed_files",
+    "claimed_verification",
+    "risks_or_followups"
+  ],
+  "additionalProperties": false
+}
