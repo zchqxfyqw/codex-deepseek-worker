@@ -334,12 +334,25 @@ Invoke-Check -Name 'Config template placeholder' -Check {
 }
 
 Invoke-Check -Name 'Runner doctor' -Check {
-    $doctor = & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Doctor | ConvertFrom-Json
-    if (-not $doctor.ok) {
-        throw "Doctor reported not ok: launcher=$($doctor.launcher_exists), schema=$($doctor.schema_exists), version=$($doctor.cli_version), profile=$($doctor.profile_exists)"
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-doctor-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $fakeCodex = Join-Path $tempBase 'codex.cmd'
+    [System.IO.File]::WriteAllText($fakeCodex, "@echo codex-cli 0.147.0`r`n", [System.Text.Encoding]::ASCII)
+    $previousCodexPath = $env:CODEX_DEEPSEEK_CODEX_PATH
+    try {
+        $env:CODEX_DEEPSEEK_CODEX_PATH = $fakeCodex
+        $doctor = & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Doctor | ConvertFrom-Json
+        if (-not $doctor.ok) {
+            throw "Doctor reported not ok: launcher=$($doctor.launcher_exists), schema=$($doctor.schema_exists), version=$($doctor.cli_version), profile=$($doctor.profile_exists)"
+        }
+        if ($doctor.cli_version -ne 'codex-cli 0.147.0') { throw 'Doctor did not report the isolated fake Codex CLI version.' }
+        if ($doctor.model_pinned -ne $true) { throw 'Doctor did not confirm the pinned model.' }
+        if ($doctor.responses_api -ne $true) { throw 'Doctor did not confirm the Responses wire API.' }
     }
-    if ($doctor.model_pinned -ne $true) { throw 'Doctor did not confirm the pinned model.' }
-    if ($doctor.responses_api -ne $true) { throw 'Doctor did not confirm the Responses wire API.' }
+    finally {
+        if ($null -eq $previousCodexPath) { Remove-Item Env:CODEX_DEEPSEEK_CODEX_PATH -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_CODEX_PATH = $previousCodexPath }
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Invoke-Check -Name 'Runner dry-run' -Check {
