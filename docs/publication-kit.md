@@ -9,7 +9,7 @@ This file prepares the repository for maintainer review. It does not authorize c
 - Visibility: public
 - Default branch: `main`
 - License: MIT
-- Current release tag: `v0.2.0-rc1`
+- Current release tag: `v0.2.3-rc1`
 
 Proposed description:
 
@@ -36,7 +36,7 @@ Do not market the project as official, perfectly isolated, universally compatibl
 
 Title:
 
-> Codex DeepSeek Worker v0.2.0-rc1 — quota-first hardening candidate
+> Codex DeepSeek Worker v0.2.3-rc1 — Windows reliability hardening candidate
 
 Release notes:
 
@@ -85,7 +85,7 @@ Codex DeepSeek Worker 将 DeepSeek V4 Flash 配置成独立 Codex CLI Worker，�
 - [ ] Confirm completed runs retain no `prompt.stdin` and no key appears in artifacts.
 - [ ] Review MIT license, security policy, contribution guide, issue templates, and disclaimer.
 - [ ] Create the public repository only after explicit approval.
-- [ ] Push `main`, confirm private vulnerability reporting, and create `v0.2.0-rc1` only after explicit approval.
+- [ ] Push `main`, confirm private vulnerability reporting, and create `v0.2.3-rc1` only after explicit approval.
 
 ## Planned Publish Commands
 
@@ -94,7 +94,7 @@ These commands are a review preview only. Do not run them until publication is e
 ```powershell
 gh repo create <github-owner>/codex-deepseek-worker --public --source . --remote origin --description "A Windows PowerShell runner and explicit Codex skill for delegating bounded tasks to DeepSeek V4 Flash with compact evidence and sandbox controls."
 git push -u origin main
-gh release create v0.2.0-rc1 --prerelease --title "Codex DeepSeek Worker v0.2.0-rc1 — quota-first hardening candidate" --notes-file RELEASE_NOTES.md
+gh release create v0.2.3-rc1 --prerelease --title "Codex DeepSeek Worker v0.2.3-rc1 — Windows reliability hardening candidate" --notes-file RELEASE_NOTES.md
 ```
 
 Before publication, either create `RELEASE_NOTES.md` from the reviewed release text above or pass the text directly to `gh release create`.

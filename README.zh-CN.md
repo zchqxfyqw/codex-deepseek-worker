@@ -40,7 +40,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . 
 
 探针只在 `.codex_tmp` 创建、读回并删除一个随机文件；失败即停止，不会自动修改 ACL。
 
-需要可复现安装时，请从 [v0.2.0-rc1 Release](../../releases/tag/v0.2.0-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`，校验后解压并运行同一安装器；不要依赖随时变化的分支。
+需要可复现安装时，请从 [v0.2.3-rc1 Release](../../releases/tag/v0.2.3-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`，校验后解压并运行同一安装器；不要依赖随时变化的分支。
 
 如需使用企业托管或自定义位置的受限密钥文件，可设置 `CODEX_DEEPSEEK_KEY_FILE`；该变量只包含文件路径，不包含密钥值。
 
