@@ -42,13 +42,48 @@ end {
         Join-Path $installRoot 'deepseek-api-key.txt'
     }
 
+    $releaseManifestPath = Join-Path $installRoot 'release-manifest.json'
+    $supportedCliVersions = @()
+    if (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) {
+        try {
+            $releaseManifest = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+            $supportedCliVersions = @($releaseManifest.supported_codex_cli_versions | ForEach-Object { [string]$_ })
+        }
+        catch { throw "DeepSeek Worker release manifest is invalid: $releaseManifestPath" }
+    }
+
+    $codexCommand = $null
+    $codexVersion = $null
     if (-not [string]::IsNullOrWhiteSpace($env:CODEX_DEEPSEEK_CODEX_PATH)) {
         $codexCommand = [System.IO.Path]::GetFullPath($env:CODEX_DEEPSEEK_CODEX_PATH)
     }
     else {
-        $codexCommand = Get-Command codex -CommandType Application -ErrorAction SilentlyContinue |
-            Where-Object { $_.Source -match 'codex(\.cmd|\.exe)?$' } |
-            Select-Object -First 1 -ExpandProperty Source
+        $candidateCommands = New-Object System.Collections.Generic.List[string]
+        $npmCodex = if ($env:APPDATA) { Join-Path $env:APPDATA 'npm\codex.cmd' } else { $null }
+        if ($null -ne $npmCodex -and (Test-Path -LiteralPath $npmCodex -PathType Leaf)) {
+            $candidateCommands.Add($npmCodex)
+        }
+        foreach ($command in @(Get-Command codex -All -ErrorAction SilentlyContinue)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$command.Source) -and $command.Source -match 'codex(\.cmd|\.exe|\.ps1)?$') {
+                if (-not $candidateCommands.Contains([string]$command.Source)) { $candidateCommands.Add([string]$command.Source) }
+            }
+        }
+        foreach ($candidate in $candidateCommands) {
+            try {
+                $candidateVersionText = (& $candidate --version 2>$null | Select-Object -First 1).ToString().Trim()
+                $candidateVersion = if ($candidateVersionText -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
+                if ($null -eq $codexCommand) {
+                    $codexCommand = $candidate
+                    $codexVersion = $candidateVersion
+                }
+                if ($supportedCliVersions.Count -gt 0 -and $supportedCliVersions -contains $candidateVersion) {
+                    $codexCommand = $candidate
+                    $codexVersion = $candidateVersion
+                    break
+                }
+            }
+            catch { continue }
+        }
     }
     if ([string]::IsNullOrWhiteSpace($codexCommand)) {
         throw 'Codex CLI (codex) was not found on PATH. Set CODEX_DEEPSEEK_CODEX_PATH if codex is installed in a non-standard location.'
@@ -57,6 +92,14 @@ end {
     if ($CodexArguments.Count -eq 1 -and $CodexArguments[0] -eq '--version') {
         & $codexCommand --version
         exit $LASTEXITCODE
+    }
+
+    if ($null -eq $codexVersion) {
+        $versionText = (& $codexCommand --version 2>$null | Select-Object -First 1).ToString().Trim()
+        $codexVersion = if ($versionText -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
+    }
+    if ($supportedCliVersions.Count -gt 0 -and $supportedCliVersions -notcontains $codexVersion) {
+        throw "Codex CLI $codexVersion is not supported by this DeepSeek Worker release. Supported: $($supportedCliVersions -join ', '). Set CODEX_DEEPSEEK_CODEX_PATH to a verified CLI."
     }
 
     for ($index = 0; $index -lt $CodexArguments.Count; $index++) {

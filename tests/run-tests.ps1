@@ -33,6 +33,64 @@ function Invoke-Check {
     }
 }
 
+function Push-WorkerTestEnvironment {
+    param([Parameter(Mandatory = $true)][string]$BasePath)
+
+    $previous = [ordered]@{}
+    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE')) {
+        $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+    $env:LOCALAPPDATA = Join-Path $BasePath 'localappdata'
+    $env:CODEX_HOME = Join-Path $BasePath 'codexhome'
+    $env:CODEX_DEEPSEEK_WORKER_ROOT = Join-Path $BasePath 'workerroot'
+    return $previous
+}
+
+function Pop-WorkerTestEnvironment {
+    param([Parameter(Mandatory = $true)]$Previous)
+
+    foreach ($name in $Previous.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $Previous[$name], 'Process')
+    }
+}
+
+function New-FakeCodexScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$Version = '0.147.0'
+    )
+
+    $template = @'
+[CmdletBinding(PositionalBinding = $false)]
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+$ErrorActionPreference = 'Stop'
+if ($Rest -contains '--version') {
+    Write-Output 'codex-cli __VERSION__'
+    exit 0
+}
+$finalIndex = [Array]::IndexOf([string[]]$Rest, '--output-last-message')
+if ($finalIndex -lt 0 -or $finalIndex + 1 -ge $Rest.Count) { throw 'Missing --output-last-message.' }
+$finalPath = $Rest[$finalIndex + 1]
+if ($env:DSW_FAKE_FINAL_KIND -eq 'invalid') {
+    [System.IO.File]::WriteAllText($finalPath, '{}', [System.Text.UTF8Encoding]::new($false))
+}
+else {
+    $final = [ordered]@{
+        status = 'completed'
+        summary = 'Fake worker completed.'
+        changed_files = @()
+        claimed_verification = @('fake-check')
+        risks_or_followups = @()
+    } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($finalPath, $final, [System.Text.UTF8Encoding]::new($false))
+}
+Write-Output '{"type":"item.completed","item":{"type":"command_execution","command":"fake-check","exit_code":0,"status":"completed"}}'
+Write-Output '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":100,"output_tokens":30,"reasoning_output_tokens":5}}'
+exit 0
+'@
+    [System.IO.File]::WriteAllText($Path, $template.Replace('__VERSION__', $Version), [System.Text.UTF8Encoding]::new($false))
+}
+
 Invoke-Check -Name 'PowerShell syntax' -Check {
     $scriptFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File)
     $scriptFiles += @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tests') -Filter '*.ps1' -File)
@@ -81,6 +139,21 @@ Invoke-Check -Name 'Output schema shape' -Check {
         if ($schema.required -notcontains $field) {
             throw "Schema is missing required field: $field"
         }
+    }
+}
+
+Invoke-Check -Name 'Release manifest contract' -Check {
+    $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
+    if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
+    if ($manifest.product_version -ne '0.2.0-rc1') { throw 'Unexpected release version.' }
+    if ([int]$manifest.runner_contract_version -ne 2 -or [int]$manifest.result_schema_version -ne 2) {
+        throw 'Release contract versions are not pinned to v2.'
+    }
+    if (@($manifest.supported_codex_cli_versions) -notcontains '0.147.0') {
+        throw 'Release manifest does not declare the verified Codex CLI version.'
+    }
+    if (($manifest.managed_files -join '|') -match '(?i)opencode') {
+        throw 'The DeepSeek release manifest unexpectedly includes OpenCode files.'
     }
 }
 
@@ -179,6 +252,34 @@ Invoke-Check -Name 'Installer temp install' -Check {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }
         if ($null -eq $previousCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $previousCodexHome }
         if ($null -eq $previousWorkerRoot) { Remove-Item Env:CODEX_DEEPSEEK_WORKER_ROOT -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_WORKER_ROOT = $previousWorkerRoot }
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-upgrade-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
+    try {
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        $launcher = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek.ps1'
+        Add-Content -LiteralPath $launcher -Value '# local-upgrade-marker'
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -Force *> $null
+
+        $installed = Get-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'installed-manifest.json') -Raw | ConvertFrom-Json
+        if ([string]::IsNullOrWhiteSpace([string]$installed.backup_path)) { throw 'Upgrade did not record a rollback backup.' }
+        $restoreMap = Get-Content -LiteralPath (Join-Path $installed.backup_path 'restore-map.json') -Raw | ConvertFrom-Json
+        $launcherBackup = @($restoreMap | Where-Object { $_.destination -eq $launcher }) | Select-Object -First 1
+        if ($null -eq $launcherBackup) { throw 'Upgrade backup does not include the previous launcher.' }
+        if ((Get-Content -LiteralPath $launcherBackup.backup -Raw) -notmatch 'local-upgrade-marker') {
+            throw 'Upgrade backup did not preserve the previous managed file content.'
+        }
+        if ((Get-Content -LiteralPath $launcher -Raw) -match 'local-upgrade-marker') {
+            throw 'Upgrade did not install the staged release launcher.'
+        }
+    }
+    finally {
+        Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -333,24 +434,37 @@ Invoke-Check -Name 'Config template placeholder' -Check {
     }
 }
 
-Invoke-Check -Name 'Runner doctor' -Check {
+Invoke-Check -Name 'Runner doctor is strict and installed-layout based' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-doctor-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
-    $fakeCodex = Join-Path $tempBase 'codex.cmd'
-    [System.IO.File]::WriteAllText($fakeCodex, "@echo codex-cli 0.147.0`r`n", [System.Text.Encoding]::ASCII)
-    $previousCodexPath = $env:CODEX_DEEPSEEK_CODEX_PATH
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
     try {
+        $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
+        New-FakeCodexScript -Path $fakeCodex
         $env:CODEX_DEEPSEEK_CODEX_PATH = $fakeCodex
-        $doctor = & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Doctor | ConvertFrom-Json
-        if (-not $doctor.ok) {
-            throw "Doctor reported not ok: launcher=$($doctor.launcher_exists), schema=$($doctor.schema_exists), version=$($doctor.cli_version), profile=$($doctor.profile_exists)"
-        }
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
+        $doctor = & $runner -Doctor | ConvertFrom-Json
+        if (-not $doctor.install_ok) { throw "Doctor reported install failure: $($doctor.manifest_errors -join '; ')" }
+        if ($doctor.ready_for_api_call) { throw 'Doctor reported API readiness without a key file.' }
         if ($doctor.cli_version -ne 'codex-cli 0.147.0') { throw 'Doctor did not report the isolated fake Codex CLI version.' }
         if ($doctor.model_pinned -ne $true) { throw 'Doctor did not confirm the pinned model.' }
         if ($doctor.responses_api -ne $true) { throw 'Doctor did not confirm the Responses wire API.' }
+        if ([int]$doctor.runner_contract_version -ne 2 -or [int]$doctor.result_schema_version -ne 2) {
+            throw 'Doctor did not report the installed v2 contracts.'
+        }
+
+        Add-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek.ps1') -Value '# tamper'
+        $tampered = & $runner -Doctor | ConvertFrom-Json
+        if ($tampered.install_ok -or $tampered.managed_hashes_ok) { throw 'Doctor did not detect a managed-file hash mismatch.' }
+
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -Force *> $null
+        New-FakeCodexScript -Path $fakeCodex -Version '0.999.0'
+        $unsupported = & $runner -Doctor | ConvertFrom-Json
+        if ($unsupported.cli_supported -or $unsupported.install_ok) { throw 'Doctor accepted an unsupported Codex CLI version.' }
     }
     finally {
-        if ($null -eq $previousCodexPath) { Remove-Item Env:CODEX_DEEPSEEK_CODEX_PATH -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_CODEX_PATH = $previousCodexPath }
+        Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -367,11 +481,81 @@ Invoke-Check -Name 'Runner dry-run' -Check {
     if ($dry.network -ne $false) { throw 'Dry-run did not default network to false.' }
 }
 
+Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
+    $auditRejected = $false
+    try {
+        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode audit -Sandbox workspace-write -DryRun *> $null
+    }
+    catch { $auditRejected = $true }
+    if (-not $auditRejected) { throw 'Runner accepted audit with workspace-write.' }
+
+    $implementRejected = $false
+    try {
+        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode implement -Sandbox read-only -DryRun *> $null
+    }
+    catch { $implementRejected = $true }
+    if (-not $implementRejected) { throw 'Runner accepted implement with read-only.' }
+}
+
+Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-runner-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
+    $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
+    try {
+        $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
+        New-FakeCodexScript -Path $fakeCodex
+        $env:CODEX_DEEPSEEK_CODEX_PATH = $fakeCodex
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        [System.IO.File]::WriteAllText((Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'), 'test-placeholder-not-a-real-key')
+
+        $workdir = Join-Path $tempBase 'repo'
+        New-Item -ItemType Directory -Path $workdir | Out-Null
+        & git -C $workdir init -q
+        & git -C $workdir config user.email 'offline-test@example.invalid'
+        & git -C $workdir config user.name 'Offline Test'
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'README.md'), "fixture`n")
+        & git -C $workdir add README.md
+        & git -C $workdir commit -q -m fixture
+
+        $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
+        $resultPath = Join-Path $workdir 'published-result.json'
+        $env:DSW_FAKE_FINAL_KIND = 'invalid'
+        $invalidOutput = & $runner -Workdir $workdir -Prompt 'fake invalid' -Mode audit -ResultFile $resultPath 2>$null
+        $invalidExit = $LASTEXITCODE
+        $invalid = $invalidOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($invalidExit -eq 0 -or $invalid.runner_state -ne 'failed' -or $invalid.final_schema_valid) {
+            throw 'Runner did not fail a malformed worker final.'
+        }
+        if (Test-Path -LiteralPath $resultPath) { throw 'Runner published ResultFile for an invalid final.' }
+
+        $env:DSW_FAKE_FINAL_KIND = 'valid'
+        $validOutput = & $runner -Workdir $workdir -Prompt 'fake valid' -Mode audit -ResultFile $resultPath 2>$null
+        $validExit = $LASTEXITCODE
+        $valid = $validOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($validExit -ne 0 -or $valid.runner_state -ne 'completed' -or -not $valid.final_schema_valid) {
+            throw 'Runner rejected a valid worker final.'
+        }
+        if ($valid.command_total -ne 1 -or $valid.command_failed -ne 0) { throw 'Runner command evidence counts are incorrect.' }
+        if ($valid.usage.uncached_input_tokens -ne 20) { throw 'Runner usage evidence is incorrect.' }
+        if (-not $valid.prompt_deleted) { throw 'Runner did not confirm prompt deletion.' }
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Runner did not atomically publish a valid ResultFile.' }
+    }
+    finally {
+        if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
+        Pop-WorkerTestEnvironment -Previous $previous
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Invoke-Check -Name 'Runner uses pinned shared-home profile' -Check {
     $runnerText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Raw
     $launcherText = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\codex-deepseek.ps1') -Raw
     if ($runnerText -match '--ignore-user-config') {
         throw 'Runner still uses --ignore-user-config, which breaks workspace-write in the verified CLI.'
+    }
+    if ($runnerText -match 'AllowConcurrentSameWorkspace') {
+        throw 'Runner still exposes a same-worktree coordination bypass.'
     }
     if ($launcherText -notmatch "'--profile',\s*'deepseek-worker'" -or
         $launcherText -notmatch 'mcp_servers\.node_repl\.enabled=false' -or

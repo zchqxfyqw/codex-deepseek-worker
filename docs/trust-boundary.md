@@ -11,6 +11,8 @@ The worker Codex session runs inside the same Codex sandbox model as the main se
 
 `-Sandbox workspace-write` grants write access to the worktree for bounded `implement` tasks. `-AllowNetwork` is required before any network access is configured. `-SkipGitRepoCheck` is available only for an intentional non-Git target.
 
+The no-network setting applies to tools executed in the Worker sandbox. The prompt and selected repository context are sent to the configured DeepSeek API because it is the model provider. Do not delegate secrets or data that policy forbids sending to that provider.
+
 ## Inherited Configuration and Explicit Overrides
 
 The worker intentionally shares `CODEX_HOME` with the main Codex installation so Windows uses one sandbox state instead of competing account/setup state. The dedicated profile and CLI overrides prevent this shared storage from selecting the main model. The launcher strips `CODEX_PERMISSION_PROFILE`, `CODEX_THREAD_ID`, and `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, and passes Codex flags that disable:

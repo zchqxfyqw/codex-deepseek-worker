@@ -8,7 +8,6 @@ param(
     [switch]$Ephemeral = $true,
     [switch]$AllowNetwork,
     [switch]$SkipGitRepoCheck,
-    [switch]$AllowConcurrentSameWorkspace,
     [ValidateSet('read-only', 'workspace-write')]
     [string]$Sandbox = 'read-only',
     [ValidateSet('audit', 'implement', 'quota-first')]
@@ -16,6 +15,7 @@ param(
     [ValidateRange(1, 86400)]
     [int]$TimeoutSeconds = 2700,
     [string]$RunRoot,
+    [string]$CorrelationId,
     [switch]$DryRun,
     [switch]$Doctor
 )
@@ -79,6 +79,104 @@ function Get-WorkerPaths {
         }
         RunRoot = Join-Path $installRoot 'runs'
         RegistryRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'CodexDeepSeekWorkerLocks'
+        InstalledManifest = Join-Path $installRoot 'installed-manifest.json'
+        ReleaseManifest = @(
+            (Join-Path $installRoot 'release-manifest.json'),
+            (Join-Path $PSScriptRoot '..\release-manifest.json')
+        ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+        SkillPath = Join-Path $codexHome 'skills\deepseek-worker\SKILL.md'
+        ModelCatalog = Join-Path $installRoot 'models.json'
+    }
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Get-PackageMetadata {
+    param([Parameter(Mandatory = $true)]$Paths)
+
+    $manifestPath = if (Test-Path -LiteralPath $Paths.InstalledManifest -PathType Leaf) {
+        $Paths.InstalledManifest
+    }
+    elseif ($null -ne $Paths.ReleaseManifest -and (Test-Path -LiteralPath $Paths.ReleaseManifest -PathType Leaf)) {
+        $Paths.ReleaseManifest
+    }
+    else {
+        $null
+    }
+    if ($null -eq $manifestPath) {
+        return [pscustomobject]@{
+            ManifestPath = $null
+            Manifest = $null
+            ManifestOk = $false
+            HashesOk = $false
+            HashErrors = @('Package manifest not found.')
+        }
+    }
+
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject]@{
+            ManifestPath = $manifestPath
+            Manifest = $null
+            ManifestOk = $false
+            HashesOk = $false
+            HashErrors = @("Package manifest is invalid JSON: $($_.Exception.Message)")
+        }
+    }
+
+    $manifestErrors = New-Object System.Collections.Generic.List[string]
+    foreach ($requiredName in @(
+        'product', 'product_version', 'runner_contract_version', 'result_schema_version',
+        'adapter_id', 'adapter_version', 'provider', 'model', 'supported_codex_cli_versions'
+    )) {
+        if ($manifest.PSObject.Properties.Name -notcontains $requiredName -or $null -eq $manifest.$requiredName) {
+            $manifestErrors.Add("Package manifest is missing: $requiredName")
+        }
+    }
+    if ($manifest.PSObject.Properties.Name -contains 'product' -and [string]$manifest.product -ne 'codex-deepseek-worker') {
+        $manifestErrors.Add('Package manifest product id is not codex-deepseek-worker.')
+    }
+    if ($manifest.PSObject.Properties.Name -contains 'provider' -and [string]$manifest.provider -ne 'deepseek-worker-secure') {
+        $manifestErrors.Add('Package manifest provider is not deepseek-worker-secure.')
+    }
+    if ($manifest.PSObject.Properties.Name -contains 'model' -and [string]$manifest.model -ne 'deepseek-v4-flash') {
+        $manifestErrors.Add('Package manifest model is not deepseek-v4-flash.')
+    }
+
+    $hashErrors = New-Object System.Collections.Generic.List[string]
+    $isInstalledManifest = [System.IO.Path]::GetFullPath($manifestPath) -eq [System.IO.Path]::GetFullPath($Paths.InstalledManifest)
+    if ($isInstalledManifest -and ($manifest.PSObject.Properties.Name -notcontains 'installed_files' -or @($manifest.installed_files).Count -eq 0)) {
+        $hashErrors.Add('Installed manifest has no managed file hashes.')
+    }
+    if ($manifest.PSObject.Properties.Name -contains 'installed_files' -and $null -ne $manifest.installed_files) {
+        foreach ($entry in @($manifest.installed_files)) {
+            if ($entry.PSObject.Properties.Name -notcontains 'path' -or $entry.PSObject.Properties.Name -notcontains 'sha256') {
+                $hashErrors.Add('Installed manifest contains an incomplete file entry.')
+                continue
+            }
+            $path = [string]$entry.path
+            $expected = ([string]$entry.sha256).ToLowerInvariant()
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $hashErrors.Add("Missing managed file: $path")
+                continue
+            }
+            if ((Get-FileSha256 -Path $path) -ne $expected) {
+                $hashErrors.Add("Managed file hash mismatch: $path")
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        ManifestPath = $manifestPath
+        Manifest = $manifest
+        ManifestOk = ($manifestErrors.Count -eq 0)
+        HashesOk = ($hashErrors.Count -eq 0)
+        HashErrors = @($manifestErrors) + @($hashErrors)
     }
 }
 
@@ -221,7 +319,8 @@ function Enter-CoordinationGuard {
 function Get-LiveRegistrations {
     param(
         [Parameter(Mandatory = $true)][string]$RegistryRoot,
-        [string]$Hash = '*'
+        [string]$Hash = '*',
+        [switch]$CleanupStale
     )
 
     $live = @()
@@ -243,7 +342,9 @@ function Get-LiveRegistrations {
         }
         catch {
             $staleCount++
-            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            if ($CleanupStale) {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            }
             continue
         }
         $live += $registration
@@ -254,12 +355,14 @@ function Get-LiveRegistrations {
 function Get-GitLines {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$AllowFailure
     )
 
     $output = @(& git -C $Root -c core.quotepath=false @Arguments 2>$null)
     if ($LASTEXITCODE -ne 0) {
-        return @()
+        if ($AllowFailure) { return @() }
+        throw "Git command failed in ${Root}: git $($Arguments -join ' ')"
     }
     return @($output | ForEach-Object { $_.ToString() })
 }
@@ -270,7 +373,7 @@ function Get-GitSnapshot {
     if ([string]::IsNullOrWhiteSpace($Root)) {
         return [pscustomobject]@{ Branch = $null; Head = $null; StatusLines = @(); ChangedFiles = @() }
     }
-    $branchLines = @(Get-GitLines -Root $Root -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD'))
+    $branchLines = @(Get-GitLines -Root $Root -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD') -AllowFailure)
     $branch = if ($branchLines.Count -gt 0) { $branchLines[0].Trim() } else { '(detached)' }
     $headLines = @(Get-GitLines -Root $Root -Arguments @('rev-parse', 'HEAD'))
     $head = if ($headLines.Count -gt 0) { $headLines[0].Trim() } else { $null }
@@ -290,6 +393,32 @@ function Get-GitSnapshot {
         StatusLines = @($statusLines)
         ChangedFiles = @($files | Sort-Object -Unique)
     }
+}
+
+function Get-FileFingerprints {
+    param(
+        [string]$Root,
+        [string[]]$RelativePaths
+    )
+
+    $result = [ordered]@{}
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $result }
+    foreach ($relativePath in @($RelativePaths)) {
+        $candidate = [System.IO.Path]::GetFullPath((Join-Path $Root $relativePath))
+        if (-not (Test-PathWithinBoundary -Path $candidate -Boundary $Root)) {
+            throw "Git status path escaped the worktree: $relativePath"
+        }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $result[$relativePath] = [ordered]@{ exists = $true; sha256 = Get-FileSha256 -Path $candidate }
+        }
+        elseif (Test-Path -LiteralPath $candidate -PathType Container) {
+            $result[$relativePath] = [ordered]@{ exists = $true; sha256 = '<directory>' }
+        }
+        else {
+            $result[$relativePath] = [ordered]@{ exists = $false; sha256 = $null }
+        }
+    }
+    return $result
 }
 
 function Get-CommandEvidence {
@@ -322,6 +451,53 @@ function Get-CommandEvidence {
     return @($commands)
 }
 
+function Get-UsageEvidence {
+    param([Parameter(Mandatory = $true)][string]$EventsPath)
+
+    $usage = $null
+    if (-not (Test-Path -LiteralPath $EventsPath -PathType Leaf)) { return $null }
+    foreach ($line in [System.IO.File]::ReadLines($EventsPath)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $event = $line | ConvertFrom-Json
+            if ($event.type -eq 'turn.completed' -and $null -ne $event.usage) {
+                $usage = [ordered]@{
+                    input_tokens = [long]$event.usage.input_tokens
+                    cached_input_tokens = [long]$event.usage.cached_input_tokens
+                    uncached_input_tokens = [long]$event.usage.input_tokens - [long]$event.usage.cached_input_tokens
+                    output_tokens = [long]$event.usage.output_tokens
+                    reasoning_output_tokens = [long]$event.usage.reasoning_output_tokens
+                }
+            }
+        }
+        catch { continue }
+    }
+    return $usage
+}
+
+function Test-WorkerFinal {
+    param([Parameter(Mandatory = $true)]$Value)
+
+    $required = @('status', 'summary', 'changed_files', 'claimed_verification', 'risks_or_followups')
+    foreach ($name in $required) {
+        if ($Value.PSObject.Properties.Name -notcontains $name) {
+            return [pscustomobject]@{ Valid = $false; Error = "Missing final field: $name" }
+        }
+    }
+    if (@('completed', 'partial', 'blocked') -notcontains [string]$Value.status) {
+        return [pscustomobject]@{ Valid = $false; Error = 'Invalid final status.' }
+    }
+    if ($Value.summary -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Value.summary)) {
+        return [pscustomobject]@{ Valid = $false; Error = 'Final summary must be a non-empty string.' }
+    }
+    foreach ($name in @('changed_files', 'claimed_verification', 'risks_or_followups')) {
+        if ($null -eq $Value.$name -or $Value.$name -isnot [System.Array]) {
+            return [pscustomobject]@{ Valid = $false; Error = "Final field must be an array: $name" }
+        }
+    }
+    return [pscustomobject]@{ Valid = $true; Error = $null }
+}
+
 function Stop-ProcessTree {
     param(
         [Parameter(Mandatory = $true)][int]$ProcessId,
@@ -342,6 +518,8 @@ function Stop-ProcessTree {
 
 function Get-DoctorResult {
     $paths = Get-WorkerPaths
+    $package = Get-PackageMetadata -Paths $paths
+    $manifest = $package.Manifest
     $profileText = if ($null -ne $paths.ProfilePath -and (Test-Path -LiteralPath $paths.ProfilePath -PathType Leaf)) {
         Get-Content -LiteralPath $paths.ProfilePath -Raw
     }
@@ -369,25 +547,69 @@ function Get-DoctorResult {
     $schemaExists = $null -ne $paths.Schema -and (Test-Path -LiteralPath $paths.Schema -PathType Leaf)
     $profileExists = $null -ne $paths.ProfilePath -and (Test-Path -LiteralPath $paths.ProfilePath -PathType Leaf)
     $keyFileExists = Test-Path -LiteralPath $paths.KeyFile -PathType Leaf
+    $skillExists = Test-Path -LiteralPath $paths.SkillPath -PathType Leaf
+    $modelCatalogExists = Test-Path -LiteralPath $paths.ModelCatalog -PathType Leaf
+    $modelPinned = [bool]($profileText -match '(?m)^model\s*=\s*"deepseek-v4-flash"')
+    $responsesApi = [bool]($profileText -match '(?m)^wire_api\s*=\s*"responses"')
+    $envKeyProvider = [bool]($profileText -match '(?m)^env_key\s*=\s*"DEEPSEEK_API_KEY"')
+    $cliVersionNumber = if ($version -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
+    $supportedVersions = if ($null -ne $manifest) { @($manifest.supported_codex_cli_versions) } else { @() }
+    $cliSupported = $null -ne $cliVersionNumber -and $supportedVersions -contains $cliVersionNumber
+    $keyAclRestricted = $false
+    $keyAclError = $null
+    if ($keyFileExists) {
+        try {
+            $unsafeAllow = @(Get-Acl -LiteralPath $paths.KeyFile).Access | Where-Object {
+                $_.AccessControlType -eq 'Allow' -and
+                $_.IdentityReference.Value -match '(CodexSandbox|Everyone|BUILTIN\\Users|Authenticated Users)'
+            }
+            $keyAclRestricted = $unsafeAllow.Count -eq 0
+        }
+        catch {
+            $keyAclError = $_.Exception.Message
+        }
+    }
+    $installOk = [bool](
+        $launcherExists -and $schemaExists -and $profileExists -and $skillExists -and
+        $modelCatalogExists -and $package.ManifestOk -and $package.HashesOk -and
+        $modelPinned -and $responsesApi -and $envKeyProvider -and $cliSupported
+    )
 
     return [ordered]@{
-        ok = [bool]($launcherExists -and $schemaExists -and $version -and $profileExists)
+        ok = $installOk
+        install_ok = $installOk
+        ready_for_api_call = [bool]($installOk -and $keyFileExists -and $keyAclRestricted)
         codex_home = $paths.CodexHome
         install_root = $paths.InstallRoot
+        package_version = if ($null -ne $manifest) { $manifest.product_version } else { $null }
+        source_commit = if ($null -ne $manifest) { $manifest.source_commit } else { $null }
+        runner_contract_version = if ($null -ne $manifest) { $manifest.runner_contract_version } else { $null }
+        result_schema_version = if ($null -ne $manifest) { $manifest.result_schema_version } else { $null }
+        manifest_path = $package.ManifestPath
+        manifest_ok = $package.ManifestOk
+        managed_hashes_ok = $package.HashesOk
+        manifest_errors = @($package.HashErrors)
         launcher = $paths.Launcher
         launcher_exists = $launcherExists
         schema_exists = $schemaExists
         profile_exists = $profileExists
+        skill_exists = $skillExists
+        model_catalog_exists = $modelCatalogExists
         key_file_exists = $keyFileExists
+        key_acl_restricted = $keyAclRestricted
+        key_acl_error = $keyAclError
         cli_version = $version
-        model_pinned = [bool]($profileText -match '(?m)^model\s*=\s*"deepseek-v4-flash"')
-        responses_api = [bool]($profileText -match '(?m)^wire_api\s*=\s*"responses"')
-        env_key_provider = [bool]($profileText -match '(?m)^env_key\s*=\s*"DEEPSEEK_API_KEY"')
+        cli_version_number = $cliVersionNumber
+        cli_supported = $cliSupported
+        supported_cli_versions = @($supportedVersions)
+        model_pinned = $modelPinned
+        responses_api = $responsesApi
+        env_key_provider = $envKeyProvider
         launcher_key_file = [bool]($launcherText -match 'deepseek-api-key\.txt')
         live_registrations = @($registrationScan.Live).Count
-        stale_registrations_removed = [int]$registrationScan.StaleCount
+        stale_registrations = [int]$registrationScan.StaleCount
         run_root = $paths.RunRoot
-        note = 'Read-only offline diagnostic. It does not call the model or reveal credentials.'
+        note = 'Strict read-only offline diagnostic. It does not call the model, mutate stale registrations, or reveal credentials.'
     }
 }
 
@@ -480,6 +702,12 @@ $Prompt = $Prompt.Trim()
 if ([string]::IsNullOrWhiteSpace($Mode)) {
     $Mode = if ($Sandbox -eq 'read-only') { 'audit' } else { 'implement' }
 }
+if ($Mode -eq 'audit' -and $Sandbox -ne 'read-only') {
+    throw 'Mode audit requires Sandbox read-only.'
+}
+if ($Mode -eq 'implement' -and $Sandbox -ne 'workspace-write') {
+    throw 'Mode implement requires Sandbox workspace-write.'
+}
 
 $gitRoot = $null
 try {
@@ -525,6 +753,12 @@ $normalizedCoordinationKey = $coordinationRoot.ToLowerInvariant()
 $hash = (Get-Sha256Text -Text $normalizedCoordinationKey).Substring(0, 24).ToUpperInvariant()
 $registryRoot = $paths.RegistryRoot
 $defaultRunRoot = $paths.RunRoot
+$package = Get-PackageMetadata -Paths $paths
+$manifest = $package.Manifest
+$productVersion = if ($null -ne $manifest) { [string]$manifest.product_version } else { $null }
+$sourceCommit = if ($null -ne $manifest) { [string]$manifest.source_commit } else { $null }
+$runnerContractVersion = if ($null -ne $manifest) { $manifest.runner_contract_version } else { $null }
+$resultSchemaVersion = if ($null -ne $manifest) { $manifest.result_schema_version } else { $null }
 
 if ($DryRun) {
     [ordered]@{
@@ -540,8 +774,13 @@ if ($DryRun) {
         ephemeral = [bool]$Ephemeral
         prompt_length = $Prompt.Length
         prompt_sha256 = Get-Sha256Text -Text $Prompt
+        correlation_id = $CorrelationId
         model = 'deepseek-v4-flash'
         provider = 'deepseek-worker-secure'
+        product_version = $productVersion
+        source_commit = $sourceCommit
+        runner_contract_version = $runnerContractVersion
+        result_schema_version = $resultSchemaVersion
         note = 'No API call was made and the prompt body is not displayed.'
     } | ConvertTo-Json -Depth 6 -Compress | Write-Output
     exit 0
@@ -568,13 +807,22 @@ $afterStatusPath = Join-Path $runDir 'after-status.txt'
 $changedFilesPath = Join-Path $runDir 'changed-files.txt'
 $diffStatPath = Join-Path $runDir 'diff-stat.txt'
 $diffPatchPath = Join-Path $runDir 'diff.patch'
+$beforeFingerprintsPath = Join-Path $runDir 'before-fingerprints.json'
+$afterFingerprintsPath = Join-Path $runDir 'after-fingerprints.json'
 $promptStdinPath = Join-Path $runDir 'prompt.stdin'
 
 $before = Get-GitSnapshot -Root $gitRoot
+$beforeFingerprints = Get-FileFingerprints -Root $gitRoot -RelativePaths $before.ChangedFiles
 Write-Utf8Text -Path $beforeStatusPath -Text (($before.StatusLines -join [Environment]::NewLine) + $(if ($before.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
+Write-JsonAtomic -Path $beforeFingerprintsPath -Value $beforeFingerprints
 
 $invocation = [ordered]@{
     run_id = $runId
+    correlation_id = $CorrelationId
+    product_version = $productVersion
+    source_commit = $sourceCommit
+    runner_contract_version = $runnerContractVersion
+    result_schema_version = $resultSchemaVersion
     physical_workdir = $resolvedWorkdir
     git_root = $gitRoot
     coordination_root = $coordinationRoot
@@ -589,13 +837,17 @@ $invocation = [ordered]@{
     prompt_length = $Prompt.Length
     prompt_sha256 = Get-Sha256Text -Text $Prompt
     prompt_persisted = $false
-    allow_concurrent_same_workspace = [bool]$AllowConcurrentSameWorkspace
     created_at_utc = [DateTime]::UtcNow.ToString('o')
 }
 Write-JsonAtomic -Path $invocationPath -Value $invocation
 
 $status = [ordered]@{
     run_id = $runId
+    correlation_id = $CorrelationId
+    product_version = $productVersion
+    source_commit = $sourceCommit
+    runner_contract_version = $runnerContractVersion
+    result_schema_version = $resultSchemaVersion
     runner_state = 'planned'
     worker_claim = $null
     physical_workdir = $resolvedWorkdir
@@ -617,6 +869,14 @@ $status = [ordered]@{
     overlap_with_preexisting = @()
     changed_files = @()
     claimed_verification = @()
+    final_schema_valid = $false
+    duration_seconds = $null
+    usage = $null
+    command_total = 0
+    command_succeeded = 0
+    command_failed = 0
+    failure_reason = $null
+    prompt_deleted = $false
     command_evidence_path = $commandsPath
     final_path = $finalPath
     events_path = $eventsPath
@@ -646,19 +906,17 @@ try {
         throw "Could not acquire the DeepSeek worker coordination guard for: $coordinationRoot"
     }
     try {
-        $registrationScan = Get-LiveRegistrations -RegistryRoot $registryRoot -Hash $hash
+        $registrationScan = Get-LiveRegistrations -RegistryRoot $registryRoot -Hash $hash -CleanupStale
         $liveRegistrations = @($registrationScan.Live)
-        if (-not $AllowConcurrentSameWorkspace) {
-            $conflicts = if ($coordinationMode -eq 'read-only') {
-                @($liveRegistrations | Where-Object { $_.Mode -eq 'workspace-write' })
-            }
-            else {
-                @($liveRegistrations)
-            }
-            if ($conflicts.Count -gt 0) {
-                $activeModes = (($conflicts | ForEach-Object { $_.Mode }) | Sort-Object -Unique) -join ', '
-                throw "Another DeepSeek Codex task conflicts with this $coordinationMode invocation in: $coordinationRoot (active: $activeModes)"
-            }
+        $conflicts = if ($coordinationMode -eq 'read-only') {
+            @($liveRegistrations | Where-Object { $_.Mode -eq 'workspace-write' })
+        }
+        else {
+            @($liveRegistrations)
+        }
+        if ($conflicts.Count -gt 0) {
+            $activeModes = (($conflicts | ForEach-Object { $_.Mode }) | Sort-Object -Unique) -join ', '
+            throw "Another DeepSeek Codex task conflicts with this $coordinationMode invocation in: $coordinationRoot (active: $activeModes)"
         }
 
         $parentStartTicks = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()
@@ -668,7 +926,6 @@ try {
             ProcessStartTimeUtc = $parentStartTicks
             Mode = $coordinationMode
             Sandbox = $Sandbox
-            Bypass = [bool]$AllowConcurrentSameWorkspace
             CoordinationRoot = $coordinationRoot
             RunId = $runId
             StartedAtUtc = $startedAtUtc.ToString('o')
@@ -787,6 +1044,13 @@ finally {
             }
         }
     }
+    $promptDeleted = -not (Test-Path -LiteralPath $promptStdinPath -PathType Leaf)
+    if (-not $promptDeleted) {
+        $runnerState = 'failed'
+        if ($exitCode -eq 0) { $exitCode = 1 }
+        $cleanupMessage = "Prompt cleanup failed: $promptStdinPath"
+        $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $cleanupMessage } else { "$caughtError; $cleanupMessage" }
+    }
     if ($registrationCreated -and $null -ne $registrationPath) {
         $cleanupGuardAcquired = Enter-CoordinationGuard -Mutex $guard
         if ($cleanupGuardAcquired) {
@@ -801,28 +1065,64 @@ finally {
     if ($null -ne $guard) { $guard.Dispose() }
 }
 
-if ($null -ne $resolvedResultFile -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
-    Copy-Item -LiteralPath $finalPath -Destination $resolvedResultFile -Force
+$after = $null
+try {
+    $after = Get-GitSnapshot -Root $gitRoot
 }
-
-$after = Get-GitSnapshot -Root $gitRoot
+catch {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    $evidenceMessage = "Git evidence collection failed: $($_.Exception.Message)"
+    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $evidenceMessage } else { "$caughtError; $evidenceMessage" }
+    $after = [pscustomobject]@{ Branch = $before.Branch; Head = $null; StatusLines = @(); ChangedFiles = @() }
+}
 Write-Utf8Text -Path $afterStatusPath -Text (($after.StatusLines -join [Environment]::NewLine) + $(if ($after.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
 
 $preexistingFiles = @($before.ChangedFiles)
 $changedFiles = @($after.ChangedFiles)
 $newlyChanged = @($changedFiles | Where-Object { $preexistingFiles -notcontains $_ } | Sort-Object -Unique)
-$overlap = @($changedFiles | Where-Object { $preexistingFiles -contains $_ } | Sort-Object -Unique)
+$fingerprintPaths = @($preexistingFiles + $changedFiles | Sort-Object -Unique)
+$afterFingerprints = Get-FileFingerprints -Root $gitRoot -RelativePaths $fingerprintPaths
+Write-JsonAtomic -Path $afterFingerprintsPath -Value $afterFingerprints
+$overlap = @($preexistingFiles | Where-Object {
+    $beforeValue = $beforeFingerprints[$_]
+    $afterValue = $afterFingerprints[$_]
+    $null -eq $beforeValue -or $null -eq $afterValue -or
+    [bool]$beforeValue.exists -ne [bool]$afterValue.exists -or
+    [string]$beforeValue.sha256 -ne [string]$afterValue.sha256
+} | Sort-Object -Unique)
 Write-Utf8Text -Path $changedFilesPath -Text (($changedFiles -join [Environment]::NewLine) + $(if ($changedFiles.Count -gt 0) { [Environment]::NewLine } else { '' }))
+
+if ($null -ne $gitRoot -and $null -ne $before.Head -and $before.Head -ne $after.Head) {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    $commitMessage = 'Worker changed Git HEAD; commits are not allowed.'
+    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $commitMessage } else { "$caughtError; $commitMessage" }
+}
+if ($Sandbox -eq 'workspace-write' -and $overlap.Count -gt 0) {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    $overlapMessage = "Worker modified files that were already dirty before the run: $($overlap -join ', ')"
+    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $overlapMessage } else { "$caughtError; $overlapMessage" }
+}
 
 $diffStatLines = @()
 $diffPatchLines = @()
 if ($null -ne $gitRoot) {
-    $diffStatLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--stat', 'HEAD'))
-    $diffPatchLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--binary', 'HEAD'))
-    foreach ($line in $after.StatusLines) {
-        if ($line.StartsWith('?? ')) {
-            $diffStatLines += "untracked: $($line.Substring(3).Trim())"
+    try {
+        $diffStatLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--stat', 'HEAD'))
+        $diffPatchLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--binary', 'HEAD'))
+        foreach ($line in $after.StatusLines) {
+            if ($line.StartsWith('?? ')) {
+                $diffStatLines += "untracked: $($line.Substring(3).Trim())"
+            }
         }
+    }
+    catch {
+        $runnerState = 'failed'
+        if ($exitCode -eq 0) { $exitCode = 1 }
+        $diffMessage = "Git diff collection failed: $($_.Exception.Message)"
+        $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $diffMessage } else { "$caughtError; $diffMessage" }
     }
 }
 Write-Utf8Text -Path $diffStatPath -Text (($diffStatLines -join [Environment]::NewLine) + $(if ($diffStatLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
@@ -830,21 +1130,28 @@ Write-Utf8Text -Path $diffPatchPath -Text (($diffPatchLines -join [Environment]:
 
 $commands = @(Get-CommandEvidence -EventsPath $eventsPath)
 Write-JsonAtomic -Path $commandsPath -Value $commands
+$usage = Get-UsageEvidence -EventsPath $eventsPath
+$commandSucceeded = @($commands | Where-Object { $_.exit_code -eq 0 }).Count
+$commandFailed = @($commands | Where-Object { $null -ne $_.exit_code -and $_.exit_code -ne 0 }).Count
 
 $workerClaim = $null
 $claimedVerification = @()
 $workerSummary = $null
 $workerRisks = @()
+$finalSchemaValid = $false
 if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
     try {
         $workerFinal = Get-Content -LiteralPath $finalPath -Raw | ConvertFrom-Json
+        $finalCheck = Test-WorkerFinal -Value $workerFinal
+        if (-not $finalCheck.Valid) { throw $finalCheck.Error }
+        $finalSchemaValid = $true
         $workerClaim = [string]$workerFinal.status
         $workerSummary = [string]$workerFinal.summary
         $claimedVerification = @($workerFinal.claimed_verification)
         $workerRisks = @($workerFinal.risks_or_followups)
     }
     catch {
-        $workerRisks += 'The worker final message was not valid against the expected JSON contract.'
+        $workerRisks += "The worker final message was not valid against the expected JSON contract: $($_.Exception.Message)"
     }
 }
 else {
@@ -853,6 +1160,12 @@ else {
 if (-not [string]::IsNullOrWhiteSpace($caughtError)) {
     $workerRisks += $caughtError
 }
+if (-not $finalSchemaValid) {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+}
+
+$durationSeconds = if ($null -ne $endedAtUtc) { [math]::Round(($endedAtUtc - $startedAtUtc).TotalSeconds, 3) } else { $null }
 
 $status.runner_state = $runnerState
 $status.worker_claim = $workerClaim
@@ -864,27 +1177,61 @@ $status.newly_changed_files = @($newlyChanged)
 $status.overlap_with_preexisting = @($overlap)
 $status.changed_files = @($changedFiles)
 $status.claimed_verification = @($claimedVerification)
+$status.final_schema_valid = $finalSchemaValid
+$status.duration_seconds = $durationSeconds
+$status.usage = $usage
+$status.command_total = $commands.Count
+$status.command_succeeded = $commandSucceeded
+$status.command_failed = $commandFailed
+$status.failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
+$status.prompt_deleted = $promptDeleted
 Write-JsonAtomic -Path $statusPath -Value $status
 
-$verifiedCommands = @($commands | Where-Object { $_.exit_code -eq 0 } | Select-Object -First 12 | ForEach-Object {
+$verifiedCommands = @($commands | Where-Object { $_.exit_code -eq 0 } | Select-Object -Last 12 | ForEach-Object {
+    $text = [string]$_.command
+    if ($text.Length -gt 240) { $text = $text.Substring(0, 237) + '...' }
+    [ordered]@{ command = $text; exit_code = $_.exit_code }
+})
+$failedCommands = @($commands | Where-Object { $null -ne $_.exit_code -and $_.exit_code -ne 0 } | Select-Object -Last 12 | ForEach-Object {
     $text = [string]$_.command
     if ($text.Length -gt 240) { $text = $text.Substring(0, 237) + '...' }
     [ordered]@{ command = $text; exit_code = $_.exit_code }
 })
 
+if ($null -ne $resolvedResultFile -and $runnerState -eq 'completed' -and $finalSchemaValid -and $workerClaim -eq 'completed') {
+    $temporaryResultFile = "$resolvedResultFile.$([Guid]::NewGuid().ToString('N')).tmp"
+    Copy-Item -LiteralPath $finalPath -Destination $temporaryResultFile -Force
+    Move-Item -LiteralPath $temporaryResultFile -Destination $resolvedResultFile -Force
+}
+
 $compactResult = [ordered]@{
     run_id = $runId
+    correlation_id = $CorrelationId
+    product_version = $productVersion
+    source_commit = $sourceCommit
+    runner_contract_version = $runnerContractVersion
+    result_schema_version = $resultSchemaVersion
     runner_state = $runnerState
     worker_claim = $workerClaim
+    final_schema_valid = $finalSchemaValid
     exit_code = $exitCode
+    duration_seconds = $durationSeconds
+    usage = $usage
     summary = $workerSummary
     changed_files = @($changedFiles)
     newly_changed_files = @($newlyChanged)
     overlap_with_preexisting = @($overlap)
     diff_stat = @($diffStatLines)
+    command_total = $commands.Count
+    command_succeeded = $commandSucceeded
+    command_failed = $commandFailed
     verified_commands = @($verifiedCommands)
+    failed_commands = @($failedCommands)
+    commands_truncated = [bool]($commands.Count -gt ($verifiedCommands.Count + $failedCommands.Count))
     claimed_verification = @($claimedVerification)
     risks = @($workerRisks)
+    failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
+    prompt_deleted = $promptDeleted
     artifact_path = $runDir
 }
 $compactResult | ConvertTo-Json -Depth 8 -Compress | Write-Output

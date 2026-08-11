@@ -1,0 +1,22 @@
+{
+  "product": "codex-deepseek-worker",
+  "product_version": "0.2.0-rc1",
+  "runner_contract_version": 2,
+  "result_schema_version": 2,
+  "adapter_id": "official-deepseek-codex",
+  "adapter_version": 1,
+  "provider": "deepseek-worker-secure",
+  "model": "deepseek-v4-flash",
+  "supported_codex_cli_versions": ["0.147.0"],
+  "managed_files": [
+    "scripts/codex-deepseek.ps1",
+    "scripts/codex-deepseek-exec.ps1",
+    "scripts/Set-DeepSeekKey.ps1",
+    "scripts/Uninstall-DeepSeekWorker.ps1",
+    "config/deepseek-v4-flash.models.json.example",
+    "config/deepseek-worker.config.toml.example",
+    "skill/deepseek-worker/SKILL.md",
+    "skill/deepseek-worker/agents/openai.yaml",
+    "skill/deepseek-worker/assets/delegation-result.schema.json"
+  ]
+}

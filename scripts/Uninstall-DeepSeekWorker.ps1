@@ -50,6 +50,8 @@ $installedFiles = @(
     (Join-Path $installRoot 'Set-DeepSeekKey.ps1'),
     (Join-Path $installRoot 'Uninstall-DeepSeekWorker.ps1'),
     (Join-Path $installRoot 'models.json'),
+    (Join-Path $installRoot 'release-manifest.json'),
+    (Join-Path $installRoot 'installed-manifest.json'),
     (Join-Path $installRoot 'assets\delegation-result.schema.json')
 )
 

@@ -14,7 +14,8 @@ Do not open a public issue for security problems. Once the repository is publish
 ## Trust model
 
 - Worker runs are read-only and network-disabled by default.
-- The worker uses `codex exec --ignore-user-config`, does not load the main user's `config.toml` or MCP definitions, and strips the main session's plugin, memory, thread, and permission hooks.
+- The worker shares `CODEX_HOME` so Windows reuses one sandbox account state. A dedicated profile plus CLI-priority overrides pin the DeepSeek provider/model, disable ordinary configured MCP servers and optional features, and strip the main session's thread and permission hooks. This is a practical boundary, not a cryptographic isolation boundary against deliberately unusual or future configuration sources.
+- "Network disabled" applies to tools launched by the Worker. The task prompt and relevant code/context are still sent to the configured DeepSeek API because that is the model provider.
 - Production writes, deployment, database changes, credentials, destructive actions, and material security decisions remain with the main agent and require direct authorization and review.
 - A worker result is a model claim. Treat `runner_state`, command evidence, and Git artifacts as runner facts, and verify claims before acting on them.
 

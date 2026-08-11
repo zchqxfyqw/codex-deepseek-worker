@@ -14,6 +14,8 @@ Worker 默认 `read-only`、无网络、`--ephemeral`。它与主 Codex 共享 `
 
 Runner 记录 Git 前后状态，把本次新增变更与运行前已存在的脏文件分开归因。`worker_claim` 和 `claimed_verification` 是模型声明；`runner_state`、命令证据和 Git 产物是运行器事实。
 
+“无网络”约束的是 Worker 沙箱内启动的工具。任务 Prompt 与所选代码上下文仍会发送给配置的 DeepSeek API；不得委托策略禁止发送给该服务商的秘密或敏感数据。
+
 ## 兼容性说明
 
 本仓库是社区集成，验证环境为 2026-08-10 的 Codex CLI 0.147.0 与 DeepSeek V4 Flash（Responses 兼容端点）。不声称官方背书，主 Codex 默认模型不会被修改。具体行为可能随版本变化。
@@ -32,6 +34,8 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 安装器不联网、不接受明文 Key 参数。密钥脚本用 `Read-Host -AsSecureString` 掩码输入，并写入受限 ACL 文件。随后可运行 `-Doctor` 和 `-DryRun` 做离线检查。
 
+需要可复现安装时，请从 [v0.2.0-rc1 Release](../../releases/tag/v0.2.0-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`，校验后解压并运行同一安装器；不要依赖随时变化的分支。
+
 如需使用企业托管或自定义位置的受限密钥文件，可设置 `CODEX_DEEPSEEK_KEY_FILE`；该变量只包含文件路径，不包含密钥值。
 
 ## 三种模式
@@ -40,9 +44,11 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 ## 并发与限额
 
-独立工作树可并行；同一工作树由命名互斥锁和“PID+进程启动时间”注册表约束。写模式互斥，只读模式只与写模式冲突。45 分钟硬超时后终止整个子进程树，不自动重试，也不静默切换模型或 provider。
+独立工作树可并行；同一工作树由命名互斥锁和“PID+进程启动时间”注册表约束。写模式与同工作树所有 Worker 互斥，只读模式与写模式冲突，且不提供同工作树绕过开关；需要并行写时使用独立 Git worktree。`-Doctor` 只报告过期注册，不修改；真实运行在协调锁内清理。45 分钟硬超时后终止整个子进程树，不自动重试，也不静默切换模型或 provider。
 
-配额节省的前提是：主会话信任并复用 Worker 返回的证据包，而不是重复执行已经完成的工作。是否委托仍由用户决定。
+`quota-first` 下，Worker 对有边界任务负责检索、实现、相关测试、纠错和自审；主会话先读紧凑结果，不重复已有确定性证据支持的探索。低风险通常只读紧凑包，中风险补看针对性的 diff/测试，高风险生产、凭据、安全、迁移、部署和破坏性操作仍由主代理直接授权与验证。整个 Worker 运行失败后停止，不自动重派、换模型、降权限或由主代理重做；同一运行内可以修正并重跑失败检查。
+
+这会主动多用一些 DeepSeek token 来换取完整性，但减少高价主模型的重复上下文。Runner 分别记录缓存输入、非缓存输入、输出、推理输出、时长和命令数量，避免把“总 token 更多”误判成“成本一定更高”。
 
 ## 限制
 
@@ -50,7 +56,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 ## 升级与卸载
 
-升级：在仓库内运行 `pwsh ./scripts/Install-DeepSeekWorker.ps1 -Force`。
+升级：在仓库内运行 `pwsh ./scripts/Install-DeepSeekWorker.ps1 -Force`。安装器先暂存和校验，再替换托管文件，并在安装目录的 `backups` 下保留带时间戳的回滚备份；Key 与历史运行证据不在替换范围内。
 
 卸载：运行 `"$env:LOCALAPPDATA\CodexDeepSeekWorker\Uninstall-DeepSeekWorker.ps1"`。默认保留 Key 文件、profile 配置和运行证据；只有明确需要清理时，才添加 `-RemoveKeyFile -RemoveProfileConfig -RemoveRunArtifacts`。
 

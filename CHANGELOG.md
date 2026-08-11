@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0-rc1] - 2026-08-11
+
+### Added
+
+- Versioned release, runner, result-schema, adapter, source-commit, and installed-file hash metadata.
+- Transactional staged install/upgrade with timestamped backups, rollback on failure, and strict read-only Doctor checks.
+- Bounded usage and command evidence: duration, cached/uncached input, output/reasoning tokens, command totals, recent successful commands, and failed commands.
+- Reproducible ZIP packaging with a SHA-256 checksum file.
+
+### Changed
+
+- `quota-first` now makes the Worker own bounded discovery, implementation, correction, relevant tests, and self-review; the main agent consumes compact evidence first and scales review by risk.
+- Invalid final JSON, prompt-cleanup failure, Git evidence failure, changed HEAD, or edits overlapping pre-existing dirty files now fail the run and prevent `-ResultFile` publication.
+- Same-worktree coordination no longer has a bypass. Independent write concurrency uses separate Git worktrees.
+- Doctor reports stale registrations without deleting them and rejects unsupported Codex CLI or changed managed-file hashes.
+
+### Security
+
+- Key replacement now writes atomically with a restrictive ACL applied before key material is stored.
+- Documentation now distinguishes tool-network isolation from model-provider data transmission and accurately describes the shared-home profile boundary.
+
 ## [0.1.0] - 2026-08-10
 
 ### Added

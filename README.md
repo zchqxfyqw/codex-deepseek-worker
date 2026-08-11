@@ -41,6 +41,8 @@ $CODEX_HOME\deepseek-worker.config.toml transparent reference profile (does not 
 - Production writes, deployments, database or schema migrations, credentials, destructive operations, and material security decisions remain under the main Codex agent's direct authorization and review.
 - `worker_claim` and `claimed_verification` in the final bundle are model claims. `runner_state`, command evidence, and Git artifacts are runner facts.
 
+"No network" controls tools started inside the Worker sandbox. The prompt and selected repository context are necessarily sent to the configured DeepSeek API; do not delegate secrets or data that policy forbids sending to that provider.
+
 ## Verified Compatibility
 
 This repository is a community integration verified on:
@@ -71,6 +73,8 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 ```
 
 The installer does not call the network and never accepts a key on the command line. `Set-DeepSeekKey.ps1` prompts with a masked `Read-Host -AsSecureString` and writes a restricted-ACL key file.
+
+For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.0-rc1 release](../../releases/tag/v0.2.0-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
 
 Check health and plan a run:
 
@@ -119,18 +123,21 @@ Mode defaults from sandbox: `read-only` implies `audit`; `workspace-write` impli
 
 ## Concurrency Boundary
 
-Independent worktrees can run in parallel. The runner uses a per-Git-root named mutex plus a process registration keyed by PID and process start time. A `workspace-write` run excludes other runs in the same worktree; a `read-only` run only conflicts with active `workspace-write` runs. `-AllowConcurrentSameWorkspace` is available only for intentionally isolated files, outputs, and shared resources.
+Independent worktrees can run in parallel. The runner uses a per-Git-root named mutex plus a process registration keyed by PID and process start time. A `workspace-write` run excludes every other Worker run in the same worktree; a `read-only` run conflicts with an active `workspace-write` run. There is no same-worktree bypass. Use separate Git worktrees when parallel writes are intentional.
 
-The registration registry lives under the system temp directory and stale registrations are removed when their process identity no longer matches.
+The registration registry lives under the system temp directory. `-Doctor` reports stale registrations without mutating them; a real run removes stale entries while holding the coordination guard.
 
 ## Quota Saving Rationale
 
-The main session does not re-execute work already covered by the worker's compact bundle. The bundle includes the worker claim, changed files, diff stat, verified command evidence, and risks. The runner also records Git before/after state so dirty files are not misattributed. The user still decides when delegation is appropriate; nothing happens automatically.
+In `quota-first`, the Worker owns discovery, implementation, relevant tests, correction, and self-review for the bounded task. The main session reads the compact bundle first and does not repeat evidence-backed exploration. Low-risk work normally needs only the compact result; medium-risk work adds targeted diff/test review; production, security, credentials, migrations, deployments, and destructive work remain under direct main-agent authorization and verification.
+
+This saves premium-model context only when the main session does not redo the same work. It may intentionally spend more DeepSeek tokens to finish and self-correct within one run. Usage evidence separates cached input, uncached input, output, reasoning output, duration, and command counts so cost and speed can be evaluated independently rather than by raw token totals alone.
 
 ## Hard Limits and Failure Behavior
 
 - Default timeout is 45 minutes (2700 seconds); on timeout the runner kills the child process tree and marks the run `timed_out`.
 - There is no automatic retry.
+- Failed checks may be diagnosed and rerun inside the same Worker session. A failed whole run stops: the skill does not automatically redispatch, switch provider, weaken permissions, or make the main agent redo the task.
 - There is no silent model or provider fallback: the dedicated profile supplies the complete DeepSeek provider, Responses wire format, and model catalog, while the launcher pins the profile, model ID, approval policy, disabled feature settings, and discovered MCP disables at CLI priority. It rejects caller attempts to override those boundaries.
 - The prompt is passed via stdin, is not persisted after the run, and never contains the API key.
 - Key material is read from a file and injected through the `DEEPSEEK_API_KEY` environment variable, never through argv, prompts, artifacts, or logs.
@@ -151,6 +158,8 @@ Upgrade from a newer clone:
 ```powershell
 pwsh ./scripts/Install-DeepSeekWorker.ps1 -Force
 ```
+
+`-Force` performs a staged upgrade, records hashes in `installed-manifest.json`, and preserves the replaced managed files in a timestamped rollback backup under the install root. The key and run history are not part of the managed-file replacement set.
 
 Uninstall:
 

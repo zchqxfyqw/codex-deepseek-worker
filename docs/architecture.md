@@ -16,7 +16,7 @@ The skill at `skill/deepseek-worker` gives the main Codex agent the invocation c
 4. It writes the prompt to a temporary stdin file, launches the child Codex CLI through the launcher, and updates the registration to the child process identity.
 5. The child runs with the output schema, writes its final JSON message, and emits JSONL events.
 6. On completion, timeout, or failure, the runner cleans up the prompt file and registration, snapshots Git state again, and writes diff/command evidence.
-7. It copies the final message to `-ResultFile` when requested and returns a compact JSON bundle.
+7. It validates the final JSON contract, copies the final message to `-ResultFile` only for a valid completed result, and returns a compact JSON bundle.
 
 ## Run Artifacts
 
@@ -38,7 +38,7 @@ The prompt stdin file is deleted after the run. The prompt body is not written i
 
 ## Coordination
 
-The coordination root is the Git root when present, otherwise the resolved workdir when `-SkipGitRepoCheck` is used. A SHA-256 prefix of the normalized root names a named mutex and the registration files. Registration files are keyed by PID plus process start time, so stale registrations from recycled PIDs are detected and removed.
+The coordination root is the Git root when present, otherwise the resolved workdir when `-SkipGitRepoCheck` is used. A SHA-256 prefix of the normalized root names a named mutex and the registration files. Registration files are keyed by PID plus process start time, so recycled-PID entries are detected. Doctor reports stale entries without mutation; a real run removes them while holding the guard. Writes to one worktree are serialized, with no bypass; parallel writers use separate Git worktrees.
 
 ## Process Isolation
 
