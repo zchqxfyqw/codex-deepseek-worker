@@ -7,7 +7,7 @@
 | Codex CLI | `0.147.0` |
 | Model | `deepseek-v4-flash` |
 | Provider wire API | `responses` |
-| Release candidate | `0.2.0-rc1` / runner contract `2` / result schema `2` |
+| Release candidate | `0.2.3-rc1` / runner contract `3` / result schema `2` |
 | Date | 2026-08-11 |
 | Platform | Windows |
 
@@ -36,6 +36,8 @@ The suite covers:
 - Transactional upgrade backup preservation and installed-file hash verification
 - Strict installed-layout Doctor behavior, managed-file tamper detection, and CLI compatibility rejection
 - Mode/sandbox mismatch rejection
+- Real-sandbox workspace-probe success and failure handling through the fake CLI contract
+- Windows Job Object cleanup of a deliberately surviving descendant process
 - Fake-CLI validation of malformed versus valid final results, bounded command/usage evidence, prompt cleanup, and atomic `-ResultFile` publication
 - Skill package file whitelist
 - CI workflow pinned-action and no-secrets checks

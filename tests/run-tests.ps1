@@ -37,7 +37,7 @@ function Push-WorkerTestEnvironment {
     param([Parameter(Mandatory = $true)][string]$BasePath)
 
     $previous = [ordered]@{}
-    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE', 'CODEX_DEEPSEEK_PWSH_PATH')) {
+    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE', 'CODEX_DEEPSEEK_PWSH_PATH', 'DSW_FAKE_WORKSPACE_PROBE_FAIL', 'DSW_FAKE_DESCENDANT_PID', 'DSW_FAKE_DESCENDANT_LATE_FILE')) {
         $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
     $env:LOCALAPPDATA = Join-Path $BasePath 'localappdata'
@@ -82,6 +82,40 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_PROMPT_CAPTURE)) {
 }
 $workdirIndex = [Array]::IndexOf([string[]]$Rest, '-C')
 $workdir = if ($workdirIndex -ge 0 -and $workdirIndex + 1 -lt $Rest.Count) { $Rest[$workdirIndex + 1] } else { $null }
+$probeTokenMatch = [regex]::Match($stdinPrompt, 'DSW_WORKSPACE_PROBE_OK_[0-9a-f]+')
+$probePathMatch = [regex]::Match($stdinPrompt, '\.codex_tmp/deepseek-worker-probe-[0-9a-f]+\.txt')
+if ($probeTokenMatch.Success -and $probePathMatch.Success -and -not [string]::IsNullOrWhiteSpace($workdir)) {
+    $probeToken = $probeTokenMatch.Value
+    $probeRelativePath = $probePathMatch.Value
+    $probeExitCode = 0
+    $probeOutput = $probeToken
+    if ($env:DSW_FAKE_WORKSPACE_PROBE_FAIL -eq '1') {
+        $probeExitCode = 1
+        $probeOutput = 'Access denied'
+    }
+    else {
+        $probePath = Join-Path $workdir $probeRelativePath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $probePath) -Force | Out-Null
+        [System.IO.File]::WriteAllText($probePath, $probeToken, [System.Text.UTF8Encoding]::new($false))
+        if ([System.IO.File]::ReadAllText($probePath) -ne $probeToken) { throw 'Fake probe readback mismatch.' }
+        Remove-Item -LiteralPath $probePath -Force
+    }
+    [ordered]@{
+        type = 'item.completed'
+        item = [ordered]@{
+            type = 'command_execution'
+            command = "probe $probeRelativePath $probeToken"
+            aggregated_output = $probeOutput
+            exit_code = $probeExitCode
+            status = 'completed'
+        }
+    } | ConvertTo-Json -Compress -Depth 5 | Write-Output
+}
+if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_DESCENDANT_PID) -and -not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_DESCENDANT_LATE_FILE)) {
+    $lateCommand = "Start-Sleep -Seconds 3; [System.IO.File]::WriteAllText('$($env:DSW_FAKE_DESCENDANT_LATE_FILE.Replace("'", "''"))', 'orphaned')"
+    $descendant = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', $lateCommand) -WindowStyle Hidden -PassThru
+    [System.IO.File]::WriteAllText($env:DSW_FAKE_DESCENDANT_PID, [string]$descendant.Id, [System.Text.UTF8Encoding]::new($false))
+}
 if (@('index', 'worktree') -contains $env:DSW_FAKE_GIT_MUTATION -and -not [string]::IsNullOrWhiteSpace($workdir)) {
     [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-index-change.txt'), 'index changed', [System.Text.UTF8Encoding]::new($false))
     if ($env:DSW_FAKE_GIT_MUTATION -eq 'index') { & git -C $workdir add worker-index-change.txt }
@@ -180,8 +214,8 @@ Invoke-Check -Name 'Output schema shape' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.2.2-rc1') { throw 'Unexpected release version.' }
-    if ([int]$manifest.runner_contract_version -ne 2 -or [int]$manifest.result_schema_version -ne 2) {
+    if ($manifest.product_version -ne '0.2.3-rc1') { throw 'Unexpected release version.' }
+    if ([int]$manifest.runner_contract_version -ne 3 -or [int]$manifest.result_schema_version -ne 2) {
         throw 'Release contract versions are not pinned to v2.'
     }
     if (@($manifest.supported_codex_cli_versions) -notcontains '0.147.0') {
@@ -501,7 +535,7 @@ Invoke-Check -Name 'Runner doctor is strict and installed-layout based' -Check {
         }
         if ([version]$doctor.powershell7_version -lt [version]'7.0') { throw 'Doctor accepted a PowerShell version below 7.0.' }
         if ([string]$doctor.powershell7_path -match '(?i)\\WindowsApps\\') { throw 'Doctor selected a Store/MSIX PowerShell path.' }
-        if ([int]$doctor.runner_contract_version -ne 2 -or [int]$doctor.result_schema_version -ne 2) {
+        if ([int]$doctor.runner_contract_version -ne 3 -or [int]$doctor.result_schema_version -ne 2) {
             throw 'Doctor did not report the installed v2 contracts.'
         }
 
@@ -565,6 +599,60 @@ Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
     if (-not $shortQuotaRejected) { throw 'Runner accepted quota-first with a timeout below 1800 seconds.' }
 }
 
+Invoke-Check -Name 'Runner workspace probe uses the real sandbox contract' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-probe-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
+    try {
+        $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
+        New-FakeCodexScript -Path $fakeCodex
+        $env:CODEX_DEEPSEEK_CODEX_PATH = $fakeCodex
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        [System.IO.File]::WriteAllText((Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'), 'test-placeholder-not-a-real-key')
+
+        $workdir = Join-Path $tempBase 'repo'
+        New-Item -ItemType Directory -Path $workdir | Out-Null
+        & git -C $workdir init -q
+        & git -C $workdir config user.email 'offline-test@example.invalid'
+        & git -C $workdir config user.name 'Offline Test'
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'README.md'), "fixture`n")
+        & git -C $workdir add README.md
+        & git -C $workdir commit -q -m fixture
+
+        $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
+        $dry = & $runner -Workdir $workdir -WorkspaceProbe -DryRun | ConvertFrom-Json
+        if (-not $dry.workspace_probe -or $dry.mode -ne 'implement' -or $dry.sandbox -ne 'workspace-write' -or $dry.network) {
+            throw 'Workspace probe dry-run did not pin its minimal write/no-network contract.'
+        }
+
+        $env:DSW_FAKE_FINAL_KIND = 'invalid'
+        $probeOutput = & $runner -Workdir $workdir -WorkspaceProbe 2>$null
+        $probeExit = $LASTEXITCODE
+        $probe = $probeOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($probeExit -ne 0 -or $probe.runner_state -ne 'completed' -or -not $probe.workspace_probe_ok) {
+            throw 'Workspace probe did not accept a successful create/read/delete round trip.'
+        }
+        if (Get-ChildItem -LiteralPath (Join-Path $workdir '.codex_tmp') -Filter 'deepseek-worker-probe-*' -ErrorAction SilentlyContinue) {
+            throw 'Workspace probe left its temporary file behind.'
+        }
+        if (Test-Path -LiteralPath (Join-Path $workdir '.codex_tmp')) {
+            throw 'Workspace probe left its newly-created temporary directory behind.'
+        }
+
+        $env:DSW_FAKE_WORKSPACE_PROBE_FAIL = '1'
+        $failedOutput = & $runner -Workdir $workdir -WorkspaceProbe 2>$null
+        $failedExit = $LASTEXITCODE
+        $failed = $failedOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($failedExit -eq 0 -or $failed.runner_state -ne 'failed' -or $failed.workspace_probe_ok) {
+            throw 'Workspace probe accepted a failed sandbox write command.'
+        }
+    }
+    finally {
+        Pop-WorkerTestEnvironment -Previous $previous
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-runner-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
@@ -603,8 +691,12 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         $env:DSW_FAKE_FINAL_KIND = 'valid'
         $runtimeCapturePath = Join-Path $tempBase 'runtime-capture.json'
         $promptCapturePath = Join-Path $tempBase 'prompt-capture.txt'
+        $descendantPidPath = Join-Path $tempBase 'descendant.pid'
+        $descendantLatePath = Join-Path $tempBase 'descendant-late.txt'
         $env:DSW_FAKE_RUNTIME_CAPTURE = $runtimeCapturePath
         $env:DSW_FAKE_PROMPT_CAPTURE = $promptCapturePath
+        $env:DSW_FAKE_DESCENDANT_PID = $descendantPidPath
+        $env:DSW_FAKE_DESCENDANT_LATE_FILE = $descendantLatePath
         $pathBefore = $env:PATH
         $validOutput = & $runner -Workdir $workdir -Prompt 'fake valid' -Mode audit -ResultFile $resultPath 2>$null
         $validExit = $LASTEXITCODE
@@ -615,6 +707,12 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         if ($valid.command_total -ne 1 -or $valid.command_failed -ne 0) { throw 'Runner command evidence counts are incorrect.' }
         if ($valid.usage.uncached_input_tokens -ne 20) { throw 'Runner usage evidence is incorrect.' }
         if (-not $valid.prompt_deleted) { throw 'Runner did not confirm prompt deletion.' }
+        $descendantPid = [int](Get-Content -LiteralPath $descendantPidPath -Raw)
+        Start-Sleep -Seconds 4
+        if (Get-Process -Id $descendantPid -ErrorAction SilentlyContinue) { throw 'Runner left a descendant process alive after completion.' }
+        if (Test-Path -LiteralPath $descendantLatePath) { throw 'Runner descendant escaped the Windows Job Object.' }
+        Remove-Item Env:DSW_FAKE_DESCENDANT_PID -ErrorAction SilentlyContinue
+        Remove-Item Env:DSW_FAKE_DESCENDANT_LATE_FILE -ErrorAction SilentlyContinue
         $runtimeCapture = Get-Content -LiteralPath $runtimeCapturePath -Raw | ConvertFrom-Json
         if ([version]$runtimeCapture.version -lt [version]'7.0') { throw 'Fake Codex did not run under PowerShell 7.' }
         if ([System.IO.Path]::GetFullPath($runtimeCapture.path_first) -ne [System.IO.Path]::GetFullPath($runtimeCapture.pshome)) { throw 'PowerShell 7 directory was not first in the child PATH.' }

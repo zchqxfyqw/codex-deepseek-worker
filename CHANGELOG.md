@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.3-rc1] - 2026-08-11
+
+### Added
+
+- Add an explicit `-WorkspaceProbe` that verifies a real sandboxed create/read/delete round trip without network access.
+
+### Fixed
+
+- Keep the complete Worker process tree in a Windows Job Object so descendants cannot outlive the runner or retain artifact handles.
+- Read the event stream with bounded shared-file retries and always finalize failed evidence collection instead of leaving `status.json` at `running`.
+
 ## [0.2.2-rc1] - 2026-08-11
 
 ### Fixed

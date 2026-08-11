@@ -106,6 +106,14 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Doctor
 pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . -Prompt "Review src for error handling gaps." -Mode audit -DryRun
 ```
 
+After a Codex upgrade, or when diagnosing `Access denied`, run one real no-network workspace probe:
+
+```powershell
+pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . -WorkspaceProbe
+```
+
+It only creates, reads, and removes one random file under `.codex_tmp`; it never repairs ACLs automatically.
+
 The skill is installed at `$CODEX_HOME\skills\deepseek-worker` and triggers only when explicitly named as `$deepseek-worker` or when the user explicitly asks for the configured DeepSeek worker.
 
 ## Typical Prompts
@@ -158,7 +166,7 @@ This saves premium-model context only when the main session does not redo the sa
 
 ## Hard Limits and Failure Behavior
 
-- Default timeout is 45 minutes (2700 seconds); on timeout the runner kills the child process tree and marks the run `timed_out`.
+- The complete Worker process tree is held in a Windows Job Object. Default timeout is 45 minutes (2700 seconds); timeout or runner cleanup terminates descendants before artifact collection.
 - `quota-first` requires at least 30 minutes. Five minutes before its hard deadline, the Worker is instructed to stop expanding scope and return a valid completed or partial result.
 - The runner requires PowerShell 7, rejects `WindowsApps` Store aliases, prepends the verified runtime to the child `PATH`, and reports the selected path/version in `-Doctor` and run artifacts.
 - There is no automatic retry.
