@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.2-rc1] - 2026-08-11
+
+### Fixed
+
+- Keep Git index, HEAD, and refs under the main Codex's ownership; detect staged-content changes without automatically undoing them.
+- Recover one short prose prefix before a single valid result object, while rejecting multiple objects, extra fields, invalid array values, and oversized output.
+- Publish only normalized JSON to `ResultFile` while preserving the raw worker final in the run artifacts.
+
 ## [0.2.1-rc1] - 2026-08-11
 
 ### Changed

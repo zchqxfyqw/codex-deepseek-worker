@@ -434,7 +434,13 @@ function Get-GitSnapshot {
     param([string]$Root)
 
     if ([string]::IsNullOrWhiteSpace($Root)) {
-        return [pscustomobject]@{ Branch = $null; Head = $null; StatusLines = @(); ChangedFiles = @() }
+        return [pscustomobject]@{
+            Branch = $null
+            Head = $null
+            StatusLines = @()
+            ChangedFiles = @()
+            IndexSemanticSha256 = $null
+        }
     }
     $branchLines = @(Get-GitLines -Root $Root -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD') -AllowFailure)
     $branch = if ($branchLines.Count -gt 0) { $branchLines[0].Trim() } else { '(detached)' }
@@ -450,11 +456,14 @@ function Get-GitSnapshot {
         }
         $files += $path.Trim('"')
     }
+    $indexSemanticLines = @(Get-GitLines -Root $Root -Arguments @('ls-files', '--stage', '-v'))
+    $indexSemanticText = $indexSemanticLines -join "`n"
     return [pscustomobject]@{
         Branch = $branch
         Head = $head
         StatusLines = @($statusLines)
         ChangedFiles = @($files | Sort-Object -Unique)
+        IndexSemanticSha256 = Get-Sha256Text -Text $indexSemanticText
     }
 }
 
@@ -542,6 +551,10 @@ function Test-WorkerFinal {
     param([Parameter(Mandatory = $true)]$Value)
 
     $required = @('status', 'summary', 'changed_files', 'claimed_verification', 'risks_or_followups')
+    $actual = @($Value.PSObject.Properties.Name)
+    if (@($actual | Where-Object { $required -notcontains $_ }).Count -gt 0) {
+        return [pscustomobject]@{ Valid = $false; Error = 'Final result contains unsupported fields.' }
+    }
     foreach ($name in $required) {
         if ($Value.PSObject.Properties.Name -notcontains $name) {
             return [pscustomobject]@{ Valid = $false; Error = "Missing final field: $name" }
@@ -557,8 +570,65 @@ function Test-WorkerFinal {
         if ($null -eq $Value.$name -or $Value.$name -isnot [System.Array]) {
             return [pscustomobject]@{ Valid = $false; Error = "Final field must be an array: $name" }
         }
+        if (@($Value.$name | Where-Object { $_ -isnot [string] }).Count -gt 0) {
+            return [pscustomobject]@{ Valid = $false; Error = "Final array values must be strings: $name" }
+        }
     }
     return [pscustomobject]@{ Valid = $true; Error = $null }
+}
+
+function ConvertFrom-WorkerFinalText {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    if ($Text.Length -gt 262144) {
+        throw 'Worker final message exceeds the 256 KiB limit.'
+    }
+    $trimmed = $Text.Trim()
+    $candidate = $trimmed
+    $parseMode = 'exact'
+    try {
+        $document = [System.Text.Json.JsonDocument]::Parse($candidate)
+    }
+    catch [System.Text.Json.JsonException] {
+        $firstObject = $trimmed.IndexOf('{')
+        if ($firstObject -le 0) { throw }
+        $prefix = $trimmed.Substring(0, $firstObject).Trim()
+        if ($prefix.Length -gt 256 -or $prefix -match '[\r\n{}\[\]\x00]' -or $prefix.Contains('```')) {
+            throw 'Worker final message has an unsupported wrapper around JSON.'
+        }
+        $prefixIsJson = $false
+        $prefixDocument = $null
+        try {
+            $prefixDocument = [System.Text.Json.JsonDocument]::Parse($prefix)
+            $prefixIsJson = $true
+        }
+        catch [System.Text.Json.JsonException] { }
+        finally {
+            if ($null -ne $prefixDocument) { $prefixDocument.Dispose() }
+        }
+        if ($prefixIsJson) {
+            throw 'Worker final message contains multiple JSON values.'
+        }
+        $candidate = $trimmed.Substring($firstObject).Trim()
+        $parseMode = 'prefix_recovered'
+        $document = [System.Text.Json.JsonDocument]::Parse($candidate)
+    }
+    try {
+        if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
+            throw 'Worker final JSON must be an object.'
+        }
+        $names = @($document.RootElement.EnumerateObject() | ForEach-Object { $_.Name })
+        if (@($names | Group-Object | Where-Object Count -gt 1).Count -gt 0) {
+            throw 'Worker final JSON contains duplicate top-level fields.'
+        }
+    }
+    finally {
+        $document.Dispose()
+    }
+    return [pscustomobject]@{
+        Value = ($candidate | ConvertFrom-Json -ErrorAction Stop)
+        ParseMode = $parseMode
+    }
 }
 
 function Stop-ProcessTree {
@@ -837,6 +907,7 @@ $productVersion = if ($null -ne $manifest) { [string]$manifest.product_version }
 $sourceCommit = if ($null -ne $manifest) { [string]$manifest.source_commit } else { $null }
 $runnerContractVersion = if ($null -ne $manifest) { $manifest.runner_contract_version } else { $null }
 $resultSchemaVersion = if ($null -ne $manifest) { $manifest.result_schema_version } else { $null }
+$gitPreflight = Get-GitSnapshot -Root $gitRoot
 
 if ($DryRun) {
     [ordered]@{
@@ -891,7 +962,7 @@ $beforeFingerprintsPath = Join-Path $runDir 'before-fingerprints.json'
 $afterFingerprintsPath = Join-Path $runDir 'after-fingerprints.json'
 $promptStdinPath = Join-Path $runDir 'prompt.stdin'
 
-$before = Get-GitSnapshot -Root $gitRoot
+$before = $gitPreflight
 $beforeFingerprints = Get-FileFingerprints -Root $gitRoot -RelativePaths $before.ChangedFiles
 Write-Utf8Text -Path $beforeStatusPath -Text (($before.StatusLines -join [Environment]::NewLine) + $(if ($before.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
 Write-JsonAtomic -Path $beforeFingerprintsPath -Value $beforeFingerprints
@@ -934,6 +1005,7 @@ $status = [ordered]@{
     worker_claim = $null
     physical_workdir = $resolvedWorkdir
     git_root = $gitRoot
+    git_index_changed = $false
     branch = $before.Branch
     head_before = $before.Head
     head_after = $null
@@ -954,6 +1026,7 @@ $status = [ordered]@{
     changed_files = @()
     claimed_verification = @()
     final_schema_valid = $false
+    final_parse_mode = $null
     duration_seconds = $null
     usage = $null
     command_total = 0
@@ -1028,13 +1101,14 @@ try {
         'quota-first' { 'Mode: quota-first. Own discovery, implementation, relevant tests, and self-review within scope so the orchestrating Codex can rely on the compact evidence bundle instead of repeating routine work.' }
     }
     $runtimeInstruction = 'Windows runtime: use PowerShell 7 semantics. For non-ASCII text, prefer apply_patch or an explicit UTF-8 writer; never use Windows PowerShell 5.1 text pipelines or heredoc-style workarounds.'
+    $gitInstruction = 'Git boundary: use Git only for read-only inspection. Do not stage, commit, push, reset, checkout, switch, stash, clean, merge, rebase, or otherwise change the Git index, HEAD, refs, or shared metadata. Leave edits unstaged for the orchestrating Codex. Do not hide a failing exit code behind a pipeline or trailing output.'
     $timeInstruction = if ($Mode -eq 'quota-first') {
         $softDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds - 300).ToString('o')
         $hardDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds).ToString('o')
         "Time budget: hard deadline $hardDeadlineUtc UTC. At $softDeadlineUtc UTC, stop new discovery, optional polish, and nonessential retries. Use the remaining five minutes for critical verification and the final JSON. If work remains, return status partial with precise follow-ups instead of running past the deadline."
     }
     else { $null }
-    $Prompt = @($Prompt.TrimEnd(), '', $modeInstruction, $runtimeInstruction, $timeInstruction, 'Final output requirement: return exactly one JSON object conforming to the provided output schema. Put only claimed checks in claimed_verification; the runner records command evidence separately. Do not add Markdown fences or prose outside the JSON object.') |
+    $Prompt = @($Prompt.TrimEnd(), '', $modeInstruction, $runtimeInstruction, $gitInstruction, $timeInstruction, 'Final output requirement: return exactly one JSON object conforming to the provided output schema. Put only claimed checks in claimed_verification; the runner records command evidence separately. Do not add Markdown fences or prose outside the JSON object.') |
         Where-Object { $null -ne $_ } |
         Join-String -Separator "`n"
     Write-Utf8Text -Path $promptStdinPath -Text $Prompt
@@ -1172,7 +1246,13 @@ catch {
     if ($exitCode -eq 0) { $exitCode = 1 }
     $evidenceMessage = "Git evidence collection failed: $($_.Exception.Message)"
     $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $evidenceMessage } else { "$caughtError; $evidenceMessage" }
-    $after = [pscustomobject]@{ Branch = $before.Branch; Head = $null; StatusLines = @(); ChangedFiles = @() }
+    $after = [pscustomobject]@{
+        Branch = $before.Branch
+        Head = $null
+        StatusLines = @()
+        ChangedFiles = @()
+        IndexSemanticSha256 = $before.IndexSemanticSha256
+    }
 }
 Write-Utf8Text -Path $afterStatusPath -Text (($after.StatusLines -join [Environment]::NewLine) + $(if ($after.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
 
@@ -1196,6 +1276,13 @@ if ($null -ne $gitRoot -and $null -ne $before.Head -and $before.Head -ne $after.
     if ($exitCode -eq 0) { $exitCode = 1 }
     $commitMessage = 'Worker changed Git HEAD; commits are not allowed.'
     $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $commitMessage } else { "$caughtError; $commitMessage" }
+}
+$gitIndexChanged = [bool]([string]$before.IndexSemanticSha256 -ne [string]$after.IndexSemanticSha256)
+if ($null -ne $gitRoot -and $gitIndexChanged) {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    $indexMessage = 'The Git index changed during the Worker interval; staging is not allowed.'
+    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $indexMessage } else { "$caughtError; $indexMessage" }
 }
 if ($Sandbox -eq 'workspace-write' -and $overlap.Count -gt 0) {
     $runnerState = 'failed'
@@ -1237,9 +1324,15 @@ $claimedVerification = @()
 $workerSummary = $null
 $workerRisks = @()
 $finalSchemaValid = $false
+$finalParseMode = $null
 if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
     try {
-        $workerFinal = Get-Content -LiteralPath $finalPath -Raw | ConvertFrom-Json
+        if ((Get-Item -LiteralPath $finalPath).Length -gt 262144) {
+            throw 'Worker final message exceeds the 256 KiB limit.'
+        }
+        $parsedFinal = ConvertFrom-WorkerFinalText -Text (Get-Content -LiteralPath $finalPath -Raw)
+        $workerFinal = $parsedFinal.Value
+        $finalParseMode = $parsedFinal.ParseMode
         $finalCheck = Test-WorkerFinal -Value $workerFinal
         if (-not $finalCheck.Valid) { throw $finalCheck.Error }
         $finalSchemaValid = $true
@@ -1276,8 +1369,10 @@ $status.preexisting_changed_files = @($preexistingFiles)
 $status.newly_changed_files = @($newlyChanged)
 $status.overlap_with_preexisting = @($overlap)
 $status.changed_files = @($changedFiles)
+$status.git_index_changed = $gitIndexChanged
 $status.claimed_verification = @($claimedVerification)
 $status.final_schema_valid = $finalSchemaValid
+$status.final_parse_mode = $finalParseMode
 $status.duration_seconds = $durationSeconds
 $status.usage = $usage
 $status.command_total = $commands.Count
@@ -1301,7 +1396,7 @@ $failedCommands = @($commands | Where-Object { $null -ne $_.exit_code -and $_.ex
 
 if ($null -ne $resolvedResultFile -and $publishable) {
     $temporaryResultFile = "$resolvedResultFile.$([Guid]::NewGuid().ToString('N')).tmp"
-    Copy-Item -LiteralPath $finalPath -Destination $temporaryResultFile -Force
+    Write-Utf8Text -Path $temporaryResultFile -Text ($workerFinal | ConvertTo-Json -Depth 20 -Compress)
     Move-Item -LiteralPath $temporaryResultFile -Destination $resolvedResultFile -Force
 }
 
@@ -1315,6 +1410,7 @@ $compactResult = [ordered]@{
     runner_state = $runnerState
     worker_claim = $workerClaim
     final_schema_valid = $finalSchemaValid
+    final_parse_mode = $finalParseMode
     exit_code = $exitCode
     duration_seconds = $durationSeconds
     usage = $usage
@@ -1322,6 +1418,7 @@ $compactResult = [ordered]@{
     changed_files = @($changedFiles)
     newly_changed_files = @($newlyChanged)
     overlap_with_preexisting = @($overlap)
+    git_index_changed = $gitIndexChanged
     diff_stat = @($diffStatLines)
     command_total = $commands.Count
     command_succeeded = $commandSucceeded

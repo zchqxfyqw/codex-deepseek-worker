@@ -76,8 +76,16 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_RUNTIME_CAPTURE)) {
     } | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText($env:DSW_FAKE_RUNTIME_CAPTURE, $runtimeCapture, [System.Text.UTF8Encoding]::new($false))
 }
+$stdinPrompt = [Console]::In.ReadToEnd()
+if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_PROMPT_CAPTURE)) {
+    [System.IO.File]::WriteAllText($env:DSW_FAKE_PROMPT_CAPTURE, $stdinPrompt, [System.Text.UTF8Encoding]::new($false))
+}
 $workdirIndex = [Array]::IndexOf([string[]]$Rest, '-C')
 $workdir = if ($workdirIndex -ge 0 -and $workdirIndex + 1 -lt $Rest.Count) { $Rest[$workdirIndex + 1] } else { $null }
+if (@('index', 'worktree') -contains $env:DSW_FAKE_GIT_MUTATION -and -not [string]::IsNullOrWhiteSpace($workdir)) {
+    [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-index-change.txt'), 'index changed', [System.Text.UTF8Encoding]::new($false))
+    if ($env:DSW_FAKE_GIT_MUTATION -eq 'index') { & git -C $workdir add worker-index-change.txt }
+}
 if ($env:DSW_FAKE_FINAL_KIND -eq 'timeout') {
     if (-not [string]::IsNullOrWhiteSpace($workdir)) {
         [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-中文-partial.txt'), '未验证半成品', [System.Text.UTF8Encoding]::new($false))
@@ -94,12 +102,21 @@ if ($env:DSW_FAKE_FINAL_KIND -eq 'invalid') {
 }
 else {
     $final = [ordered]@{
-        status = if ($env:DSW_FAKE_FINAL_KIND -eq 'partial') { 'partial' } else { 'completed' }
+        status = if (@('partial', 'prefix-partial') -contains $env:DSW_FAKE_FINAL_KIND) { 'partial' } else { 'completed' }
         summary = 'Fake worker completed.'
         changed_files = @()
         claimed_verification = @('fake-check')
         risks_or_followups = @()
-    } | ConvertTo-Json -Compress
+    }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'extra-field') { $final.extra = 'rejected' }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'non-string-array') { $final.claimed_verification = @('fake-check', 1) }
+    $final = $final | ConvertTo-Json -Compress
+    if (@('prefix', 'prefix-partial') -contains $env:DSW_FAKE_FINAL_KIND) { $final = "Brief result follows.`n`n$final" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'multiple') { $final = "$final`n$final" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'json-prefix') { $final = "[] $final" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'duplicate-field') { $final = $final.Insert(1, '"status":"completed",') }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'trailing') { $final = "$final trailing" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'oversized') { $final = 'x' * 262145 }
     [System.IO.File]::WriteAllText($finalPath, $final, [System.Text.UTF8Encoding]::new($false))
 }
 Write-Output '{"type":"item.completed","item":{"type":"command_execution","command":"fake-check","exit_code":0,"status":"completed"}}'
@@ -163,7 +180,7 @@ Invoke-Check -Name 'Output schema shape' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.2.1-rc1') { throw 'Unexpected release version.' }
+    if ($manifest.product_version -ne '0.2.2-rc1') { throw 'Unexpected release version.' }
     if ([int]$manifest.runner_contract_version -ne 2 -or [int]$manifest.result_schema_version -ne 2) {
         throw 'Release contract versions are not pinned to v2.'
     }
@@ -554,6 +571,8 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
     $previous = Push-WorkerTestEnvironment -BasePath $tempBase
     $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
     $previousRuntimeCapture = $env:DSW_FAKE_RUNTIME_CAPTURE
+    $previousPromptCapture = $env:DSW_FAKE_PROMPT_CAPTURE
+    $previousGitMutation = $env:DSW_FAKE_GIT_MUTATION
     try {
         $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
         New-FakeCodexScript -Path $fakeCodex
@@ -583,7 +602,9 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
 
         $env:DSW_FAKE_FINAL_KIND = 'valid'
         $runtimeCapturePath = Join-Path $tempBase 'runtime-capture.json'
+        $promptCapturePath = Join-Path $tempBase 'prompt-capture.txt'
         $env:DSW_FAKE_RUNTIME_CAPTURE = $runtimeCapturePath
+        $env:DSW_FAKE_PROMPT_CAPTURE = $promptCapturePath
         $pathBefore = $env:PATH
         $validOutput = & $runner -Workdir $workdir -Prompt 'fake valid' -Mode audit -ResultFile $resultPath 2>$null
         $validExit = $LASTEXITCODE
@@ -599,10 +620,70 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         if ([System.IO.Path]::GetFullPath($runtimeCapture.path_first) -ne [System.IO.Path]::GetFullPath($runtimeCapture.pshome)) { throw 'PowerShell 7 directory was not first in the child PATH.' }
         if ($env:PATH -ne $pathBefore) { throw 'Runner did not restore the parent PATH.' }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Runner did not atomically publish a valid ResultFile.' }
+        $capturedPrompt = Get-Content -LiteralPath $promptCapturePath -Raw
+        if ($capturedPrompt -notmatch 'Do not stage, commit, push' -or $capturedPrompt -notmatch 'Do not hide a failing exit code') {
+            throw 'Runner did not inject the Git ownership and exit-code rules.'
+        }
+
+        $env:DSW_FAKE_FINAL_KIND = 'prefix'
+        $prefixOutput = & $runner -Workdir $workdir -Prompt 'fake prefixed final' -Mode audit -ResultFile $resultPath 2>$null
+        $prefix = $prefixOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $prefix.final_parse_mode -ne 'prefix_recovered' -or -not $prefix.final_schema_valid) {
+            throw 'Runner did not recover a single short prefix before valid JSON.'
+        }
+        Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json | Out-Null
+        if ((Get-Content -LiteralPath $resultPath -Raw).TrimStart().StartsWith('Brief')) {
+            throw 'Runner published wrapper prose instead of normalized JSON.'
+        }
+        $rawPrefixFinal = Get-Content -LiteralPath (Join-Path $prefix.artifact_path 'final.json') -Raw
+        if (-not $rawPrefixFinal.TrimStart().StartsWith('Brief')) {
+            throw 'Runner did not preserve the original prefixed final artifact.'
+        }
+
+        $partialResultPath = Join-Path $workdir 'partial-result.json'
+        $env:DSW_FAKE_FINAL_KIND = 'prefix-partial'
+        $partialOutput = & $runner -Workdir $workdir -Prompt 'fake prefixed partial' -Mode audit -ResultFile $partialResultPath 2>$null
+        $partial = $partialOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $partial.runner_state -ne 'completed' -or $partial.worker_claim -ne 'partial' -or -not $partial.final_schema_valid -or $partial.final_parse_mode -ne 'prefix_recovered') {
+            throw 'Runner did not preserve a valid partial claim recovered from a short prefix.'
+        }
+        if (Test-Path -LiteralPath $partialResultPath) { throw 'Runner published a partial claim as a completed ResultFile.' }
+
+        foreach ($invalidKind in @('multiple', 'json-prefix', 'duplicate-field', 'trailing', 'extra-field', 'non-string-array', 'oversized')) {
+            $env:DSW_FAKE_FINAL_KIND = $invalidKind
+            $rejectedOutput = & $runner -Workdir $workdir -Prompt "fake $invalidKind" -Mode audit 2>$null
+            $rejected = $rejectedOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if ($LASTEXITCODE -eq 0 -or $rejected.runner_state -ne 'failed' -or $rejected.final_schema_valid) {
+                throw "Runner accepted invalid final kind: $invalidKind"
+            }
+        }
+
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'staged-baseline.txt'), 'staged baseline', [System.Text.UTF8Encoding]::new($false))
+        & git -C $workdir add staged-baseline.txt
+        $env:DSW_FAKE_FINAL_KIND = 'valid'
+        $env:DSW_FAKE_GIT_MUTATION = 'worktree'
+        $unstagedOutput = & $runner -Workdir $workdir -Prompt 'fake unstaged mutation with staged baseline' -Mode implement -Sandbox workspace-write 2>$null
+        $unstagedResult = $unstagedOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $unstagedResult.runner_state -ne 'completed' -or $unstagedResult.git_index_changed) {
+            throw 'Runner falsely reported a change to a pre-existing staged baseline.'
+        }
+        Remove-Item -LiteralPath (Join-Path $workdir 'worker-index-change.txt') -Force
+
+        $env:DSW_FAKE_GIT_MUTATION = 'index'
+        $indexOutput = & $runner -Workdir $workdir -Prompt 'fake index mutation' -Mode implement -Sandbox workspace-write 2>$null
+        $indexResult = $indexOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -eq 0 -or $indexResult.runner_state -ne 'failed' -or -not $indexResult.git_index_changed) {
+            throw 'Runner did not reject a Worker change to the Git index.'
+        }
+        & git -C $workdir reset -q HEAD
+        Remove-Item -LiteralPath (Join-Path $workdir 'worker-index-change.txt') -Force
+        Remove-Item Env:DSW_FAKE_GIT_MUTATION -ErrorAction SilentlyContinue
     }
     finally {
         if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
         if ($null -eq $previousRuntimeCapture) { Remove-Item Env:DSW_FAKE_RUNTIME_CAPTURE -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_RUNTIME_CAPTURE = $previousRuntimeCapture }
+        if ($null -eq $previousPromptCapture) { Remove-Item Env:DSW_FAKE_PROMPT_CAPTURE -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_PROMPT_CAPTURE = $previousPromptCapture }
+        if ($null -eq $previousGitMutation) { Remove-Item Env:DSW_FAKE_GIT_MUTATION -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_GIT_MUTATION = $previousGitMutation }
         Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }

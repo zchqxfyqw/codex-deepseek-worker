@@ -173,7 +173,7 @@ This saves premium-model context only when the main session does not redo the sa
 - The public templates are verified against a specific Codex CLI and DeepSeek model version; later versions may change config or protocol behavior.
 - The worker has no automatic quota budgeting; users control how much work is delegated.
 - A worker result is a model claim; the main session should review the evidence before relying on it.
-- A failed or timed-out run with workspace changes is marked `unverified_partial_changes`; it is never published as a completed `ResultFile` and is not automatically retried, committed, or moved to another worktree.
+- A failed or timed-out run with workspace changes is marked `unverified_partial_changes`; it is never published as a completed `ResultFile` and is not automatically retried, committed, or moved to another worktree. The Worker also leaves Git staging and commits to the main Codex.
 - The launcher disables conventional section-based MCP declarations, including the Desktop-bundled names tested here. A deliberately unusual or future configuration source is not a cryptographic isolation boundary; review `-DryRun`, `-Doctor`, and release smoke-test logs after changing Codex configuration or version.
 - The installer does not add the install directory to `PATH`; call scripts by full path.
 
