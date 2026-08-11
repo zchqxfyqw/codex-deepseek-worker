@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1-rc1] - 2026-08-11
+
+### Changed
+
+- Require a verified non-Store PowerShell 7 runtime and prefer it for Codex child shell discovery.
+- Prevent `quota-first` runs shorter than 30 minutes and reserve the last five minutes for structured finalization.
+- Preserve `timed_out` state and mark unverified partial workspace changes without automatic retry or recovery automation.
+
 ## [0.2.0-rc1] - 2026-08-11
 
 ### Added

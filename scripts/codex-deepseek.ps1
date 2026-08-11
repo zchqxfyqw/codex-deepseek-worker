@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(ValueFromPipeline = $true)]

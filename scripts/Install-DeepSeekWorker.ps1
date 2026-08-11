@@ -1,9 +1,25 @@
+#Requires -Version 7.0
+
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
+
+$requiredPowerShell7 = if (-not [string]::IsNullOrWhiteSpace($env:CODEX_DEEPSEEK_PWSH_PATH)) {
+    [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($env:CODEX_DEEPSEEK_PWSH_PATH))
+}
+else {
+    Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+}
+if ($requiredPowerShell7 -match '(?i)\\WindowsApps\\' -or -not (Test-Path -LiteralPath $requiredPowerShell7 -PathType Leaf)) {
+    throw 'DeepSeek Worker requires a non-Store PowerShell 7 MSI or portable installation. Set CODEX_DEEPSEEK_PWSH_PATH for a portable build.'
+}
+$powerShell7Major = & $requiredPowerShell7 -NoLogo -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.Major' 2>$null
+if ($LASTEXITCODE -ne 0 -or [int]($powerShell7Major | Select-Object -Last 1) -lt 7) {
+    throw "Configured PowerShell runtime is not executable PowerShell 7 or later: $requiredPowerShell7"
+}
 
 function Write-Utf8Text {
     param([string]$Path, [string]$Text)

@@ -82,7 +82,7 @@ DeepSeek's public changelog currently documents V4 Flash through its OpenAI Chat
 
 Prerequisites:
 
-- Windows with PowerShell 5.1 or PowerShell 7
+- Windows with a non-Store PowerShell 7 installation (MSI recommended; portable builds can use `CODEX_DEEPSEEK_PWSH_PATH`)
 - Git available on `PATH`
 - Codex CLI `0.147.0` available as `codex` on `PATH` (or `CODEX_DEEPSEEK_CODEX_PATH` set to the `codex.cmd`/`codex.exe` you want to use)
 - A DeepSeek API key
@@ -159,6 +159,8 @@ This saves premium-model context only when the main session does not redo the sa
 ## Hard Limits and Failure Behavior
 
 - Default timeout is 45 minutes (2700 seconds); on timeout the runner kills the child process tree and marks the run `timed_out`.
+- `quota-first` requires at least 30 minutes. Five minutes before its hard deadline, the Worker is instructed to stop expanding scope and return a valid completed or partial result.
+- The runner requires PowerShell 7, rejects `WindowsApps` Store aliases, prepends the verified runtime to the child `PATH`, and reports the selected path/version in `-Doctor` and run artifacts.
 - There is no automatic retry.
 - Failed checks may be diagnosed and rerun inside the same Worker session. A failed whole run stops: the skill does not automatically redispatch, switch provider, weaken permissions, or make the main agent redo the task.
 - There is no silent model or provider fallback: the dedicated profile supplies the complete DeepSeek provider, Responses wire format, and model catalog, while the launcher pins the profile, model ID, approval policy, disabled feature settings, and discovered MCP disables at CLI priority. It rejects caller attempts to override those boundaries.
@@ -171,6 +173,7 @@ This saves premium-model context only when the main session does not redo the sa
 - The public templates are verified against a specific Codex CLI and DeepSeek model version; later versions may change config or protocol behavior.
 - The worker has no automatic quota budgeting; users control how much work is delegated.
 - A worker result is a model claim; the main session should review the evidence before relying on it.
+- A failed or timed-out run with workspace changes is marked `unverified_partial_changes`; it is never published as a completed `ResultFile` and is not automatically retried, committed, or moved to another worktree.
 - The launcher disables conventional section-based MCP declarations, including the Desktop-bundled names tested here. A deliberately unusual or future configuration source is not a cryptographic isolation boundary; review `-DryRun`, `-Doctor`, and release smoke-test logs after changing Codex configuration or version.
 - The installer does not add the install directory to `PATH`; call scripts by full path.
 

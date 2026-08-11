@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 [CmdletBinding()]
 param(
     [string]$Workdir,
@@ -92,6 +94,67 @@ function Get-WorkerPaths {
 function Get-FileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path)
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Get-PowerShell7Runtime {
+    $candidates = New-Object System.Collections.Generic.List[object]
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_DEEPSEEK_PWSH_PATH)) {
+        $candidates.Add([pscustomobject]@{ Path = $env:CODEX_DEEPSEEK_PWSH_PATH; Source = 'environment' })
+    }
+    else {
+        $standardPath = if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe' } else { $null }
+        if (-not [string]::IsNullOrWhiteSpace($standardPath)) {
+            $candidates.Add([pscustomobject]@{ Path = $standardPath; Source = 'standard-msi' })
+        }
+    }
+
+    $errors = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in $candidates) {
+        try {
+            $candidatePath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables([string]$candidate.Path))
+        }
+        catch {
+            $errors.Add("Invalid PowerShell 7 path from $($candidate.Source): $($candidate.Path)")
+            continue
+        }
+        if ($candidatePath -match '(?i)\\WindowsApps\\') {
+            $errors.Add("Rejected Store/MSIX PowerShell path because Codex sandbox identities may not execute it: $candidatePath")
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) { continue }
+
+        try {
+            $probeScript = '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); Write-Output ($PSVersionTable.PSVersion.ToString()+"|DeepSeek-编码探针")'
+            $probeOutput = @(& $candidatePath -NoLogo -NoProfile -NonInteractive -Command $probeScript 2>&1)
+            $probeExitCode = $LASTEXITCODE
+            $probeLine = ($probeOutput | Select-Object -Last 1).ToString().Trim()
+            if ($probeExitCode -ne 0 -or $probeLine -notmatch '^(?<version>\d+\.\d+(?:\.\d+)?[^|]*)\|DeepSeek-编码探针$') {
+                throw "PowerShell 7 UTF-8 probe failed (exit $probeExitCode): $probeLine"
+            }
+            $version = [version]$Matches.version
+            if ($version.Major -lt 7) { throw "PowerShell version $version is below 7.0." }
+            return [pscustomobject]@{
+                Ok = $true
+                Path = $candidatePath
+                Version = $version.ToString()
+                Source = [string]$candidate.Source
+                ProbeOk = $true
+                Error = $null
+            }
+        }
+        catch {
+            $errors.Add("PowerShell 7 candidate failed: $candidatePath ($($_.Exception.Message))")
+        }
+    }
+
+    return [pscustomobject]@{
+        Ok = $false
+        Path = $null
+        Version = $null
+        Source = $null
+        ProbeOk = $false
+        Error = if ($errors.Count -gt 0) { $errors -join '; ' } else { 'PowerShell 7 was not found. Install the MSI or portable build, not only the Microsoft Store package.' }
+    }
 }
 
 function Get-PackageMetadata {
@@ -520,6 +583,7 @@ function Get-DoctorResult {
     $paths = Get-WorkerPaths
     $package = Get-PackageMetadata -Paths $paths
     $manifest = $package.Manifest
+    $powerShell7 = Get-PowerShell7Runtime
     $profileText = if ($null -ne $paths.ProfilePath -and (Test-Path -LiteralPath $paths.ProfilePath -PathType Leaf)) {
         Get-Content -LiteralPath $paths.ProfilePath -Raw
     }
@@ -572,7 +636,7 @@ function Get-DoctorResult {
     $installOk = [bool](
         $launcherExists -and $schemaExists -and $profileExists -and $skillExists -and
         $modelCatalogExists -and $package.ManifestOk -and $package.HashesOk -and
-        $modelPinned -and $responsesApi -and $envKeyProvider -and $cliSupported
+        $modelPinned -and $responsesApi -and $envKeyProvider -and $cliSupported -and $powerShell7.Ok
     )
 
     return [ordered]@{
@@ -602,6 +666,12 @@ function Get-DoctorResult {
         cli_version_number = $cliVersionNumber
         cli_supported = $cliSupported
         supported_cli_versions = @($supportedVersions)
+        powershell7_ok = [bool]$powerShell7.Ok
+        powershell7_path = $powerShell7.Path
+        powershell7_version = $powerShell7.Version
+        powershell7_source = $powerShell7.Source
+        powershell7_probe_ok = [bool]$powerShell7.ProbeOk
+        powershell7_error = $powerShell7.Error
         model_pinned = $modelPinned
         responses_api = $responsesApi
         env_key_provider = $envKeyProvider
@@ -708,6 +778,14 @@ if ($Mode -eq 'audit' -and $Sandbox -ne 'read-only') {
 if ($Mode -eq 'implement' -and $Sandbox -ne 'workspace-write') {
     throw 'Mode implement requires Sandbox workspace-write.'
 }
+if ($Mode -eq 'quota-first' -and $TimeoutSeconds -lt 1800) {
+    throw 'Mode quota-first requires TimeoutSeconds of at least 1800. Use implement for a shorter bounded task.'
+}
+
+$powerShell7 = Get-PowerShell7Runtime
+if (-not $powerShell7.Ok) {
+    throw "DeepSeek Worker requires an executable PowerShell 7 MSI or portable installation. $($powerShell7.Error)"
+}
 
 $gitRoot = $null
 try {
@@ -771,6 +849,8 @@ if ($DryRun) {
         mode = $Mode
         network = [bool]$AllowNetwork
         timeout_seconds = $TimeoutSeconds
+        powershell7_path = $powerShell7.Path
+        powershell7_version = $powerShell7.Version
         ephemeral = [bool]$Ephemeral
         prompt_length = $Prompt.Length
         prompt_sha256 = Get-Sha256Text -Text $Prompt
@@ -831,6 +911,8 @@ $invocation = [ordered]@{
     mode = $Mode
     network = [bool]$AllowNetwork
     timeout_seconds = $TimeoutSeconds
+    powershell7_path = $powerShell7.Path
+    powershell7_version = $powerShell7.Version
     ephemeral = [bool]$Ephemeral
     provider = 'deepseek-worker-secure'
     model = 'deepseek-v4-flash'
@@ -857,6 +939,8 @@ $status = [ordered]@{
     head_after = $null
     sandbox = $Sandbox
     network = [bool]$AllowNetwork
+    powershell7_path = $powerShell7.Path
+    powershell7_version = $powerShell7.Version
     provider = 'deepseek-worker-secure'
     model = 'deepseek-v4-flash'
     started_at_utc = $null
@@ -876,6 +960,7 @@ $status = [ordered]@{
     command_succeeded = 0
     command_failed = 0
     failure_reason = $null
+    unverified_partial_changes = $false
     prompt_deleted = $false
     command_evidence_path = $commandsPath
     final_path = $finalPath
@@ -942,7 +1027,16 @@ try {
         'implement' { 'Mode: implement. Complete the bounded change and its relevant verification within the granted sandbox.' }
         'quota-first' { 'Mode: quota-first. Own discovery, implementation, relevant tests, and self-review within scope so the orchestrating Codex can rely on the compact evidence bundle instead of repeating routine work.' }
     }
-    $Prompt = $Prompt.TrimEnd() + "`n`n$modeInstruction`nFinal output requirement: return exactly one JSON object conforming to the provided output schema. Put only claimed checks in claimed_verification; the runner records command evidence separately. Do not add Markdown fences or prose outside the JSON object."
+    $runtimeInstruction = 'Windows runtime: use PowerShell 7 semantics. For non-ASCII text, prefer apply_patch or an explicit UTF-8 writer; never use Windows PowerShell 5.1 text pipelines or heredoc-style workarounds.'
+    $timeInstruction = if ($Mode -eq 'quota-first') {
+        $softDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds - 300).ToString('o')
+        $hardDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds).ToString('o')
+        "Time budget: hard deadline $hardDeadlineUtc UTC. At $softDeadlineUtc UTC, stop new discovery, optional polish, and nonessential retries. Use the remaining five minutes for critical verification and the final JSON. If work remains, return status partial with precise follow-ups instead of running past the deadline."
+    }
+    else { $null }
+    $Prompt = @($Prompt.TrimEnd(), '', $modeInstruction, $runtimeInstruction, $timeInstruction, 'Final output requirement: return exactly one JSON object conforming to the provided output schema. Put only claimed checks in claimed_verification; the runner records command evidence separately. Do not add Markdown fences or prose outside the JSON object.') |
+        Where-Object { $null -ne $_ } |
+        Join-String -Separator "`n"
     Write-Utf8Text -Path $promptStdinPath -Text $Prompt
 
     $arguments = @('exec', '-C', $resolvedWorkdir, '--sandbox', $Sandbox, '--color', 'never', '--json')
@@ -967,10 +1061,13 @@ $argumentArray = [string[]]$childArgs.ToArray()
 exit $LASTEXITCODE
 '@
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
-    $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $powershellExe = $powerShell7.Path
     $previousChildLauncher = $env:CODEX_DEEPSEEK_CHILD_LAUNCHER
     $previousChildArgs = $env:CODEX_DEEPSEEK_CHILD_ARGS
+    $previousPath = $env:PATH
     try {
+        $powerShell7Directory = Split-Path -Parent $powerShell7.Path
+        $env:PATH = if ([string]::IsNullOrWhiteSpace($previousPath)) { $powerShell7Directory } else { "$powerShell7Directory;$previousPath" }
         $env:CODEX_DEEPSEEK_CHILD_LAUNCHER = $launcher
         $env:CODEX_DEEPSEEK_CHILD_ARGS = $argumentJsonPath
         $child = Start-Process -FilePath $powershellExe -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', $encodedCommand) -RedirectStandardInput $promptStdinPath -RedirectStandardOutput $eventsPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
@@ -978,6 +1075,7 @@ exit $LASTEXITCODE
     finally {
         $env:CODEX_DEEPSEEK_CHILD_LAUNCHER = $previousChildLauncher
         $env:CODEX_DEEPSEEK_CHILD_ARGS = $previousChildArgs
+        $env:PATH = $previousPath
     }
 
     $childStartTicks = $child.StartTime.ToUniversalTime().Ticks.ToString()
@@ -1160,12 +1258,14 @@ else {
 if (-not [string]::IsNullOrWhiteSpace($caughtError)) {
     $workerRisks += $caughtError
 }
-if (-not $finalSchemaValid) {
+if (-not $finalSchemaValid -and $runnerState -eq 'completed') {
     $runnerState = 'failed'
     if ($exitCode -eq 0) { $exitCode = 1 }
 }
 
 $durationSeconds = if ($null -ne $endedAtUtc) { [math]::Round(($endedAtUtc - $startedAtUtc).TotalSeconds, 3) } else { $null }
+$publishable = [bool]($runnerState -eq 'completed' -and $finalSchemaValid -and $workerClaim -eq 'completed')
+$unverifiedPartialChanges = [bool](-not $publishable -and $changedFiles.Count -gt 0)
 
 $status.runner_state = $runnerState
 $status.worker_claim = $workerClaim
@@ -1184,6 +1284,7 @@ $status.command_total = $commands.Count
 $status.command_succeeded = $commandSucceeded
 $status.command_failed = $commandFailed
 $status.failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
+$status.unverified_partial_changes = $unverifiedPartialChanges
 $status.prompt_deleted = $promptDeleted
 Write-JsonAtomic -Path $statusPath -Value $status
 
@@ -1198,7 +1299,7 @@ $failedCommands = @($commands | Where-Object { $null -ne $_.exit_code -and $_.ex
     [ordered]@{ command = $text; exit_code = $_.exit_code }
 })
 
-if ($null -ne $resolvedResultFile -and $runnerState -eq 'completed' -and $finalSchemaValid -and $workerClaim -eq 'completed') {
+if ($null -ne $resolvedResultFile -and $publishable) {
     $temporaryResultFile = "$resolvedResultFile.$([Guid]::NewGuid().ToString('N')).tmp"
     Copy-Item -LiteralPath $finalPath -Destination $temporaryResultFile -Force
     Move-Item -LiteralPath $temporaryResultFile -Destination $resolvedResultFile -Force
@@ -1231,6 +1332,9 @@ $compactResult = [ordered]@{
     claimed_verification = @($claimedVerification)
     risks = @($workerRisks)
     failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
+    unverified_partial_changes = $unverifiedPartialChanges
+    powershell7_path = $powerShell7.Path
+    powershell7_version = $powerShell7.Version
     prompt_deleted = $promptDeleted
     artifact_path = $runDir
 }

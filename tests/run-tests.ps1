@@ -37,7 +37,7 @@ function Push-WorkerTestEnvironment {
     param([Parameter(Mandatory = $true)][string]$BasePath)
 
     $previous = [ordered]@{}
-    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE')) {
+    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE', 'CODEX_DEEPSEEK_PWSH_PATH')) {
         $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
     $env:LOCALAPPDATA = Join-Path $BasePath 'localappdata'
@@ -68,6 +68,24 @@ if ($Rest -contains '--version') {
     Write-Output 'codex-cli __VERSION__'
     exit 0
 }
+if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_RUNTIME_CAPTURE)) {
+    $runtimeCapture = [ordered]@{
+        version = $PSVersionTable.PSVersion.ToString()
+        pshome = $PSHOME
+        path_first = @($env:PATH -split ';')[0]
+    } | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($env:DSW_FAKE_RUNTIME_CAPTURE, $runtimeCapture, [System.Text.UTF8Encoding]::new($false))
+}
+$workdirIndex = [Array]::IndexOf([string[]]$Rest, '-C')
+$workdir = if ($workdirIndex -ge 0 -and $workdirIndex + 1 -lt $Rest.Count) { $Rest[$workdirIndex + 1] } else { $null }
+if ($env:DSW_FAKE_FINAL_KIND -eq 'timeout') {
+    if (-not [string]::IsNullOrWhiteSpace($workdir)) {
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-中文-partial.txt'), '未验证半成品', [System.Text.UTF8Encoding]::new($false))
+    }
+    Write-Output '{"type":"item.completed","item":{"type":"command_execution","command":"fake-partial-write","exit_code":0,"status":"completed"}}'
+    Start-Sleep -Seconds 5
+    exit 0
+}
 $finalIndex = [Array]::IndexOf([string[]]$Rest, '--output-last-message')
 if ($finalIndex -lt 0 -or $finalIndex + 1 -ge $Rest.Count) { throw 'Missing --output-last-message.' }
 $finalPath = $Rest[$finalIndex + 1]
@@ -76,7 +94,7 @@ if ($env:DSW_FAKE_FINAL_KIND -eq 'invalid') {
 }
 else {
     $final = [ordered]@{
-        status = 'completed'
+        status = if ($env:DSW_FAKE_FINAL_KIND -eq 'partial') { 'partial' } else { 'completed' }
         summary = 'Fake worker completed.'
         changed_files = @()
         claimed_verification = @('fake-check')
@@ -145,7 +163,7 @@ Invoke-Check -Name 'Output schema shape' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.2.0-rc1') { throw 'Unexpected release version.' }
+    if ($manifest.product_version -ne '0.2.1-rc1') { throw 'Unexpected release version.' }
     if ([int]$manifest.runner_contract_version -ne 2 -or [int]$manifest.result_schema_version -ne 2) {
         throw 'Release contract versions are not pinned to v2.'
     }
@@ -191,6 +209,7 @@ Invoke-Check -Name 'Installer dry-run' -Check {
     $previousLocal = $env:LOCALAPPDATA
     $previousCodexHome = $env:CODEX_HOME
     $previousWorkerRoot = $env:CODEX_DEEPSEEK_WORKER_ROOT
+    $previousPowerShell7 = $env:CODEX_DEEPSEEK_PWSH_PATH
     try {
         $env:LOCALAPPDATA = Join-Path $tempBase 'localappdata'
         $env:CODEX_HOME = Join-Path $tempBase 'codexhome'
@@ -202,11 +221,16 @@ Invoke-Check -Name 'Installer dry-run' -Check {
         if (Test-Path -LiteralPath (Join-Path $tempBase 'codexhome')) {
             throw 'Installer dry-run created the Codex home.'
         }
+        $env:CODEX_DEEPSEEK_PWSH_PATH = 'C:\Program Files\WindowsApps\pwsh.exe'
+        $invalidRuntimeRejected = $false
+        try { & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -WhatIf *> $null } catch { $invalidRuntimeRejected = $true }
+        if (-not $invalidRuntimeRejected) { throw 'Installer accepted a Store/MSIX PowerShell runtime override.' }
     }
     finally {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }
         if ($null -eq $previousCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $previousCodexHome }
         if ($null -eq $previousWorkerRoot) { Remove-Item Env:CODEX_DEEPSEEK_WORKER_ROOT -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_WORKER_ROOT = $previousWorkerRoot }
+        if ($null -eq $previousPowerShell7) { Remove-Item Env:CODEX_DEEPSEEK_PWSH_PATH -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_PWSH_PATH = $previousPowerShell7 }
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -455,9 +479,21 @@ Invoke-Check -Name 'Runner doctor is strict and installed-layout based' -Check {
         if ($doctor.cli_version -ne 'codex-cli 0.147.0') { throw 'Doctor did not report the isolated fake Codex CLI version.' }
         if ($doctor.model_pinned -ne $true) { throw 'Doctor did not confirm the pinned model.' }
         if ($doctor.responses_api -ne $true) { throw 'Doctor did not confirm the Responses wire API.' }
+        if (-not $doctor.powershell7_ok -or -not $doctor.powershell7_probe_ok) {
+            throw "Doctor did not confirm an executable UTF-8 PowerShell 7 runtime: $($doctor.powershell7_error)"
+        }
+        if ([version]$doctor.powershell7_version -lt [version]'7.0') { throw 'Doctor accepted a PowerShell version below 7.0.' }
+        if ([string]$doctor.powershell7_path -match '(?i)\\WindowsApps\\') { throw 'Doctor selected a Store/MSIX PowerShell path.' }
         if ([int]$doctor.runner_contract_version -ne 2 -or [int]$doctor.result_schema_version -ne 2) {
             throw 'Doctor did not report the installed v2 contracts.'
         }
+
+        $env:CODEX_DEEPSEEK_PWSH_PATH = 'C:\Program Files\WindowsApps\pwsh.exe'
+        $invalidPowerShell = & $runner -Doctor | ConvertFrom-Json
+        if ($invalidPowerShell.install_ok -or $invalidPowerShell.powershell7_ok) {
+            throw 'Doctor silently ignored an invalid explicit PowerShell 7 override.'
+        }
+        Remove-Item Env:CODEX_DEEPSEEK_PWSH_PATH -ErrorAction SilentlyContinue
 
         Add-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek.ps1') -Value '# tamper'
         $tampered = & $runner -Doctor | ConvertFrom-Json
@@ -484,6 +520,9 @@ Invoke-Check -Name 'Runner dry-run' -Check {
     if ($dry.model -ne 'deepseek-v4-flash') { throw 'Dry-run did not pin deepseek-v4-flash.' }
     if ($dry.provider -ne 'deepseek-worker-secure') { throw 'Dry-run did not pin the provider.' }
     if ($dry.network -ne $false) { throw 'Dry-run did not default network to false.' }
+    if ([version]$dry.powershell7_version -lt [version]'7.0' -or [string]$dry.powershell7_path -match '(?i)\\WindowsApps\\') {
+        throw 'Dry-run did not select a non-Store PowerShell 7 runtime.'
+    }
 }
 
 Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
@@ -500,6 +539,13 @@ Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
     }
     catch { $implementRejected = $true }
     if (-not $implementRejected) { throw 'Runner accepted implement with read-only.' }
+
+    $shortQuotaRejected = $false
+    try {
+        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode quota-first -Sandbox workspace-write -TimeoutSeconds 900 -DryRun *> $null
+    }
+    catch { $shortQuotaRejected = $true }
+    if (-not $shortQuotaRejected) { throw 'Runner accepted quota-first with a timeout below 1800 seconds.' }
 }
 
 Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' -Check {
@@ -507,6 +553,7 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previous = Push-WorkerTestEnvironment -BasePath $tempBase
     $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
+    $previousRuntimeCapture = $env:DSW_FAKE_RUNTIME_CAPTURE
     try {
         $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
         New-FakeCodexScript -Path $fakeCodex
@@ -535,6 +582,9 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         if (Test-Path -LiteralPath $resultPath) { throw 'Runner published ResultFile for an invalid final.' }
 
         $env:DSW_FAKE_FINAL_KIND = 'valid'
+        $runtimeCapturePath = Join-Path $tempBase 'runtime-capture.json'
+        $env:DSW_FAKE_RUNTIME_CAPTURE = $runtimeCapturePath
+        $pathBefore = $env:PATH
         $validOutput = & $runner -Workdir $workdir -Prompt 'fake valid' -Mode audit -ResultFile $resultPath 2>$null
         $validExit = $LASTEXITCODE
         $valid = $validOutput | Select-Object -Last 1 | ConvertFrom-Json
@@ -544,10 +594,15 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         if ($valid.command_total -ne 1 -or $valid.command_failed -ne 0) { throw 'Runner command evidence counts are incorrect.' }
         if ($valid.usage.uncached_input_tokens -ne 20) { throw 'Runner usage evidence is incorrect.' }
         if (-not $valid.prompt_deleted) { throw 'Runner did not confirm prompt deletion.' }
+        $runtimeCapture = Get-Content -LiteralPath $runtimeCapturePath -Raw | ConvertFrom-Json
+        if ([version]$runtimeCapture.version -lt [version]'7.0') { throw 'Fake Codex did not run under PowerShell 7.' }
+        if ([System.IO.Path]::GetFullPath($runtimeCapture.path_first) -ne [System.IO.Path]::GetFullPath($runtimeCapture.pshome)) { throw 'PowerShell 7 directory was not first in the child PATH.' }
+        if ($env:PATH -ne $pathBefore) { throw 'Runner did not restore the parent PATH.' }
         if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Runner did not atomically publish a valid ResultFile.' }
     }
     finally {
         if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
+        if ($null -eq $previousRuntimeCapture) { Remove-Item Env:DSW_FAKE_RUNTIME_CAPTURE -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_RUNTIME_CAPTURE = $previousRuntimeCapture }
         Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -562,12 +617,64 @@ Invoke-Check -Name 'Runner uses pinned shared-home profile' -Check {
     if ($runnerText -match 'AllowConcurrentSameWorkspace') {
         throw 'Runner still exposes a same-worktree coordination bypass.'
     }
+    if ($runnerText -match 'Get-Command powershell\.exe' -or $runnerText -match 'Start-Process\s+-FilePath\s+[^\r\n]*powershell\.exe') {
+        throw 'Runner still launches its child through Windows PowerShell 5.1.'
+    }
+    if ($runnerText -notmatch 'Time budget: hard deadline' -or $runnerText -notmatch 'unverified_partial_changes') {
+        throw 'Runner is missing the bounded quota-first finalization or partial-change contract.'
+    }
     if ($launcherText -notmatch "'--profile',\s*'deepseek-worker'" -or
         $launcherText -notmatch 'mcp_servers\.node_repl\.enabled=false' -or
         $launcherText -notmatch 'mcp_servers\.openaiDeveloperDocs\.enabled=false' -or
         $launcherText -notmatch '\$configCandidates' -or
         $launcherText -notmatch '\$mcpNames') {
         throw 'Launcher does not pin the profile and MCP disable boundary.'
+    }
+}
+
+Invoke-Check -Name 'Runner preserves timeout state and partial evidence' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-timeout-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
+    $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
+    try {
+        $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
+        New-FakeCodexScript -Path $fakeCodex
+        $env:CODEX_DEEPSEEK_CODEX_PATH = $fakeCodex
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        [System.IO.File]::WriteAllText((Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'), 'test-placeholder-not-a-real-key')
+
+        $workdir = Join-Path $tempBase 'repo'
+        New-Item -ItemType Directory -Path $workdir | Out-Null
+        & git -C $workdir init -q
+        & git -C $workdir config user.email 'offline-test@example.invalid'
+        & git -C $workdir config user.name 'Offline Test'
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'README.md'), "fixture`n")
+        & git -C $workdir add README.md
+        & git -C $workdir commit -q -m fixture
+
+        $env:DSW_FAKE_FINAL_KIND = 'timeout'
+        $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
+        $resultPath = Join-Path $workdir 'published-result.json'
+        $timeoutOutput = & $runner -Workdir $workdir -Prompt 'write then wait' -Mode implement -Sandbox workspace-write -TimeoutSeconds 1 -ResultFile $resultPath 2>$null
+        $timeoutExit = $LASTEXITCODE
+        $timeout = $timeoutOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($timeoutExit -ne 124 -or $timeout.runner_state -ne 'timed_out') { throw 'Runner did not preserve timed_out/124.' }
+        if (-not $timeout.unverified_partial_changes) { throw 'Runner did not mark timed-out workspace changes as unverified.' }
+        if ($timeout.final_schema_valid -or (Test-Path -LiteralPath $resultPath)) {
+            throw 'Runner published or trusted a timed-out partial result.'
+        }
+        if (-not $timeout.prompt_deleted) { throw 'Runner did not remove the prompt after timeout.' }
+        $status = Get-Content -LiteralPath (Join-Path $timeout.artifact_path 'status.json') -Raw | ConvertFrom-Json
+        if ($status.runner_state -ne 'timed_out' -or -not $status.unverified_partial_changes) {
+            throw 'Persistent status lost timeout recovery evidence.'
+        }
+        if (@($status.changed_files) -notcontains 'worker-中文-partial.txt') { throw 'Timeout evidence omitted the untracked partial file.' }
+    }
+    finally {
+        if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
+        Pop-WorkerTestEnvironment -Previous $previous
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

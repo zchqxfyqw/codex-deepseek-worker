@@ -24,7 +24,7 @@ DeepSeek 当前公开更新日志明确写到的是 OpenAI Chat Completions 与 
 
 ## 快速开始
 
-前置条件：Windows、PowerShell、Git、`PATH` 中可用的 Codex CLI 0.147.0（或用 `CODEX_DEEPSEEK_CODEX_PATH` 指定）、DeepSeek API Key。
+前置条件：Windows、Git、非 Store 安装的 PowerShell 7（推荐 MSI；便携版可用 `CODEX_DEEPSEEK_PWSH_PATH` 指定）、`PATH` 中可用的 Codex CLI 0.147.0（或用 `CODEX_DEEPSEEK_CODEX_PATH` 指定）、DeepSeek API Key。Worker 不再回退到 Windows PowerShell 5.1。
 
 ```powershell
 pwsh ./scripts/Install-DeepSeekWorker.ps1 -WhatIf
