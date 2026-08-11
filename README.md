@@ -2,6 +2,29 @@
 
 Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI instance delegate bounded, well-scoped tasks to a separate DeepSeek V4 Flash worker session. It is a community integration for [Codex CLI](https://github.com/openai/codex), not an OpenAI or DeepSeek product.
 
+## 中文简介
+
+`$deepseek-worker` 是一个显式调用的 Codex Skill：主 Codex 负责理解目标、划定权限和最终验收，DeepSeek V4 Flash 通过独立 Codex CLI 进程完成边界明确的检索、编码、测试和自审，再返回紧凑、可核验的证据包。它适合把大量常规执行交给成本较低的模型，同时保留 Codex 的工作区、沙箱、Git 归因和质量把关能力。
+
+它不会修改 Codex Desktop 的默认模型，也不会静默回退到 OpenAI 或其他 Provider。默认只读、工具禁网、会话不持久化；写入和联网必须按任务明确授权。生产写入、数据库迁移、部署、凭据和重大安全决策仍由主 Codex 直接处理。
+
+常用调用：
+
+```text
+$deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自行检索、实现、测试、纠错和自审；主 Codex 只验收紧凑证据。范围：……；验收：……。
+```
+
+### v0.2.0-rc1 更新摘要
+
+- 强化 `quota-first`：Worker 主做，Codex 按风险验收，避免重复探索。
+- 增加版本、源码 SHA、结果契约和托管文件哈希，Doctor 可识别篡改与不兼容 CLI。
+- 支持带备份的事务升级；保留 API Key、历史 runs 和独立 Worker。
+- 严格校验最终结果、Prompt 清理、Git HEAD、脏文件重叠与命令证据，失败不误报成功。
+- 记录耗时、缓存/非缓存 token、命令成败和变更摘要；不自动重试、换模型或降低权限。
+- 同一 Git worktree 禁止并行写入；需要并行时使用独立 worktree。
+
+完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)，固定安装包见 [v0.2.0-rc1 Release](../../releases/tag/v0.2.0-rc1)。
+
 ## Problem
 
 Main Codex sessions are convenient for open-ended work, but every turn consumes model quota. A bounded task such as "read this module and list the risks", "implement this one change", or "run the offline tests and summarize" does not need to consume premium main-model context. This project runs those tasks in a separate, cheaper worker session and returns a compact, structured evidence bundle that the main session can verify instead of repeating the work.
