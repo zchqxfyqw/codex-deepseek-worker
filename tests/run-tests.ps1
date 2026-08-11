@@ -247,6 +247,11 @@ Invoke-Check -Name 'Installer temp install' -Check {
         if ($profileText -match '\{\{MODEL_CATALOG_PATH\}\}') {
             throw 'Installer did not substitute the model catalog path.'
         }
+        $installedManifest = Get-Content -LiteralPath (Join-Path $installRoot 'installed-manifest.json') -Raw | ConvertFrom-Json
+        $expectedCommit = (& git -C $repoRoot rev-parse HEAD | Select-Object -First 1).Trim()
+        if ($installedManifest.source_commit -ne $expectedCommit) {
+            throw 'Installer did not record the source Git commit.'
+        }
     }
     finally {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }

@@ -71,9 +71,11 @@ if ($existing.Count -gt 0 -and -not $Force) {
 
 $sourceCommit = $null
 try {
-    $candidateCommit = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($candidateCommit)) {
-        $sourceCommit = $candidateCommit.Trim()
+    $candidateOutput = @(& git -C $repoRoot rev-parse HEAD 2>$null)
+    $gitExitCode = $LASTEXITCODE
+    $candidateCommit = $candidateOutput | Select-Object -First 1
+    if ($gitExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($candidateCommit)) {
+        $sourceCommit = ([string]$candidateCommit).Trim()
     }
 }
 catch { $sourceCommit = $null }
