@@ -418,7 +418,7 @@ Invoke-Check -Name 'README requirements' -Check {
         }
     }
     if ($readme -notmatch '0\.147\.0') { throw 'README does not mention Codex CLI 0.147.0.' }
-    if ($readme -notmatch '2026-08-10') { throw 'README does not mention the verification date.' }
+    if ($readme -notmatch '2026-08-11') { throw 'README does not mention the verification date.' }
 }
 
 Invoke-Check -Name 'Config template placeholder' -Check {

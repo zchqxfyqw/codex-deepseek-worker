@@ -7,7 +7,8 @@
 | Codex CLI | `0.147.0` |
 | Model | `deepseek-v4-flash` |
 | Provider wire API | `responses` |
-| Date | 2026-08-10 |
+| Release candidate | `0.2.0-rc1` / runner contract `2` / result schema `2` |
+| Date | 2026-08-11 |
 | Platform | Windows |
 
 This is a community verification. It does not imply OpenAI or DeepSeek endorsement, and future CLI or API changes may require config updates.
@@ -32,18 +33,23 @@ The suite covers:
 - Skill frontmatter and `agents/openai.yaml` shape
 - Forbidden personal-path and common-secret patterns
 - Installer `-WhatIf` behavior against temporary environment roots
+- Transactional upgrade backup preservation and installed-file hash verification
+- Strict installed-layout Doctor behavior, managed-file tamper detection, and CLI compatibility rejection
+- Mode/sandbox mismatch rejection
+- Fake-CLI validation of malformed versus valid final results, bounded command/usage evidence, prompt cleanup, and atomic `-ResultFile` publication
 - Skill package file whitelist
 - CI workflow pinned-action and no-secrets checks
 - Required README sections
 
-## Live Release-Candidate Smoke Test
+## Live 0.2.0-rc1 Smoke Test
 
-The 2026-08-10 release candidate was installed into a fresh temporary layout and exercised against a temporary Git repository using Codex CLI `0.147.0` and `deepseek-v4-flash`:
+The packaged ZIP generated from commit `e742f6b6e5fbe6a71d8251b514a86ad59c6e8128` was installed into a fresh temporary layout and exercised on 2026-08-11 against an isolated temporary Git repository using Codex CLI `0.147.0` and `deepseek-v4-flash`:
 
-- `-Doctor` returned `ok=true`, detected Codex CLI `0.147.0`, the installed profile/model catalog, launcher, schema, and external key-file path.
+- `-Doctor` returned `install_ok=true` and `cli_supported=true` for Codex CLI `0.147.0`.
 - A `read-only` structured run completed with exit code 0, read the exact fixture marker, and produced no Git changes.
 - A `workspace-write` structured run completed with exit code 0 and created only `RESULT.md`; independent byte verification found exactly `public-worker-ok` plus one LF (`17` bytes).
-- The successful runs' stderr/artifact scan contained no `api.openai.com`, `chatgpt.com`, `anthropic.com`, GitHub plugin-sync, or plugin destination strings.
+- Both final results passed contract validation. The audit recorded 3,985 uncached input tokens; the write run recorded 4,429. Usage was returned as evidence, not used as a pass/fail budget.
+- The 28 generated artifacts contained no key value and no `api.openai.com`, `chatgpt.com`, or `anthropic.com` destination strings.
 - The prompt stdin file was removed after completion and no key value was written to the run directory.
 
 During release testing, `codex exec --ignore-user-config` was rejected as a design choice because Codex CLI `0.147.0` reduced the requested `workspace-write` run to read-only and could ignore provider configuration depending on option placement. The verified design instead uses the dedicated profile plus CLI-priority pinning and MCP disables while sharing one Windows sandbox state.

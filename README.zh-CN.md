@@ -18,7 +18,7 @@ Runner 记录 Git 前后状态，把本次新增变更与运行前已存在的�
 
 ## 兼容性说明
 
-本仓库是社区集成，验证环境为 2026-08-10 的 Codex CLI 0.147.0 与 DeepSeek V4 Flash（Responses 兼容端点）。不声称官方背书，主 Codex 默认模型不会被修改。具体行为可能随版本变化。
+本仓库是社区集成，验证环境为 2026-08-11 的 Codex CLI 0.147.0 与 DeepSeek V4 Flash（Responses 兼容端点）。不声称官方背书，主 Codex 默认模型不会被修改。具体行为可能随版本变化。
 
 DeepSeek 当前公开更新日志明确写到的是 OpenAI Chat Completions 与 Anthropic 兼容接口。因此，本项目的 `wire_api = "responses"` 应理解为经过本项目实测的 Codex 兼容路径，不应扩大解释为 DeepSeek 对通用 Responses API 的长期承诺。Codex CLI 或 DeepSeek API 更新后，需要重新做真实冒烟测试。
 

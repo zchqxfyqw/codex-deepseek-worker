@@ -47,7 +47,7 @@ $CODEX_HOME\deepseek-worker.config.toml transparent reference profile (does not 
 
 This repository is a community integration verified on:
 
-- 2026-08-10
+- 2026-08-11
 - Codex CLI `0.147.0`
 - DeepSeek V4 Flash (`deepseek-v4-flash`) through the DeepSeek Responses-compatible endpoint
 

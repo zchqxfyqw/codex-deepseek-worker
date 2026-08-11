@@ -9,7 +9,7 @@ This file prepares the repository for maintainer review. It does not authorize c
 - Visibility: public
 - Default branch: `main`
 - License: MIT
-- Initial release tag: `v0.1.0-rc1`
+- Current release tag: `v0.2.0-rc1`
 
 Proposed description:
 
@@ -36,13 +36,13 @@ Do not market the project as official, perfectly isolated, universally compatibl
 
 Title:
 
-> Codex DeepSeek Worker v0.1.0-rc1 — public review candidate
+> Codex DeepSeek Worker v0.2.0-rc1 — quota-first hardening candidate
 
 Release notes:
 
-> First public review candidate of the Windows DeepSeek Worker Runner v2. It packages an explicit Codex skill, pinned DeepSeek V4 Flash launcher, compact evidence bundles, Git before/after attribution, same-worktree coordination, hard timeouts, offline installation, masked key setup, bilingual documentation, and offline CI checks.
+> This candidate makes GitHub the reproducible source for the local Worker: versioned contracts and hashes, transactional upgrades with rollback backups, strict Doctor checks, final-schema enforcement, bounded token/command evidence, and a concise quota-first collaboration policy. It keeps the DeepSeek-only product boundary and does not bundle OpenCode Go.
 >
-> Verified locally on Windows with Codex CLI 0.147.0 and DeepSeek V4 Flash on 2026-08-10. This is a community integration, not an OpenAI or DeepSeek product. Review the trust boundary and run the isolated smoke tests before relying on it.
+> Verified locally on Windows with Codex CLI 0.147.0 and DeepSeek V4 Flash on 2026-08-11. This is a community integration, not an OpenAI or DeepSeek product. Review the trust boundary and run the isolated smoke tests before relying on it.
 
 ## 中文介绍稿
 
@@ -70,7 +70,7 @@ Codex DeepSeek Worker 将 DeepSeek V4 Flash 配置成独立 Codex CLI Worker，�
 
 ## English Announcement
 
-> Codex DeepSeek Worker is a Windows PowerShell runner plus an explicit Codex skill for delegating bounded tasks to a DeepSeek V4 Flash Codex CLI session. It returns compact evidence instead of raw event streams, separates runner facts from model claims, preserves dirty-worktree attribution, and defaults to read-only, no-network, ephemeral execution. This is an unofficial community integration and an initial public review candidate.
+> Codex DeepSeek Worker is a Windows PowerShell runner plus an explicit Codex skill for delegating bounded tasks to a DeepSeek V4 Flash Codex CLI session. It returns compact evidence instead of raw event streams, separates runner facts from model claims, preserves dirty-worktree attribution, validates versioned result contracts, and performs backed-up transactional upgrades. This is an unofficial community integration.
 
 ## Maintainer Review Checklist
 
@@ -85,7 +85,7 @@ Codex DeepSeek Worker 将 DeepSeek V4 Flash 配置成独立 Codex CLI Worker，�
 - [ ] Confirm completed runs retain no `prompt.stdin` and no key appears in artifacts.
 - [ ] Review MIT license, security policy, contribution guide, issue templates, and disclaimer.
 - [ ] Create the public repository only after explicit approval.
-- [ ] Push `main`, enable private vulnerability reporting, and create `v0.1.0-rc1` only after explicit approval.
+- [ ] Push `main`, confirm private vulnerability reporting, and create `v0.2.0-rc1` only after explicit approval.
 
 ## Planned Publish Commands
 
@@ -94,7 +94,7 @@ These commands are a review preview only. Do not run them until publication is e
 ```powershell
 gh repo create <github-owner>/codex-deepseek-worker --public --source . --remote origin --description "A Windows PowerShell runner and explicit Codex skill for delegating bounded tasks to DeepSeek V4 Flash with compact evidence and sandbox controls."
 git push -u origin main
-gh release create v0.1.0-rc1 --prerelease --title "Codex DeepSeek Worker v0.1.0-rc1 — public review candidate" --notes-file RELEASE_NOTES.md
+gh release create v0.2.0-rc1 --prerelease --title "Codex DeepSeek Worker v0.2.0-rc1 — quota-first hardening candidate" --notes-file RELEASE_NOTES.md
 ```
 
 Before publication, either create `RELEASE_NOTES.md` from the reviewed release text above or pass the text directly to `gh release create`.
