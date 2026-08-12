@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.4-rc1] - 2026-08-12
+
+### Fixed
+
+- Accept one schema-valid JSON object wrapped in a standard `json` Markdown fence, with at most one short prose prefix, while retaining all single-object, duplicate-field, exact-schema, and size checks.
+
 ## [0.2.3-rc1] - 2026-08-11
 
 ### Added

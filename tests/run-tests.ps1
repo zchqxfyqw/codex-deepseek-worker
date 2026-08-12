@@ -136,7 +136,7 @@ if ($env:DSW_FAKE_FINAL_KIND -eq 'invalid') {
 }
 else {
     $final = [ordered]@{
-        status = if (@('partial', 'prefix-partial') -contains $env:DSW_FAKE_FINAL_KIND) { 'partial' } else { 'completed' }
+        status = if (@('partial', 'prefix-partial', 'fenced-partial') -contains $env:DSW_FAKE_FINAL_KIND) { 'partial' } else { 'completed' }
         summary = 'Fake worker completed.'
         changed_files = @()
         claimed_verification = @('fake-check')
@@ -145,7 +145,13 @@ else {
     if ($env:DSW_FAKE_FINAL_KIND -eq 'extra-field') { $final.extra = 'rejected' }
     if ($env:DSW_FAKE_FINAL_KIND -eq 'non-string-array') { $final.claimed_verification = @('fake-check', 1) }
     $final = $final | ConvertTo-Json -Compress
+    $fence = ([char]96).ToString() * 3
     if (@('prefix', 'prefix-partial') -contains $env:DSW_FAKE_FINAL_KIND) { $final = "Brief result follows.`n`n$final" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced') { $final = "${fence}json`n$final`n$fence" }
+    if (@('fenced-prefix', 'fenced-partial') -contains $env:DSW_FAKE_FINAL_KIND) { $final = "All scoped work is complete.`n`n${fence}json`n$final`n$fence" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced-trailing') { $final = "${fence}json`n$final`n$fence trailing" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced-multiple') { $final = "${fence}json`n$final`n$fence `n${fence}json`n$final`n$fence" }
+    if ($env:DSW_FAKE_FINAL_KIND -eq 'non-json-fence') { $final = "${fence}text`n$final`n$fence" }
     if ($env:DSW_FAKE_FINAL_KIND -eq 'multiple') { $final = "$final`n$final" }
     if ($env:DSW_FAKE_FINAL_KIND -eq 'json-prefix') { $final = "[] $final" }
     if ($env:DSW_FAKE_FINAL_KIND -eq 'duplicate-field') { $final = $final.Insert(1, '"status":"completed",') }
@@ -214,7 +220,7 @@ Invoke-Check -Name 'Output schema shape' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.2.3-rc1') { throw 'Unexpected release version.' }
+    if ($manifest.product_version -ne '0.2.4-rc1') { throw 'Unexpected release version.' }
     if ([int]$manifest.runner_contract_version -ne 3 -or [int]$manifest.result_schema_version -ne 2) {
         throw 'Release contract versions are not pinned to v2.'
     }
@@ -738,6 +744,16 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
             throw 'Runner did not preserve the original prefixed final artifact.'
         }
 
+        foreach ($fencedKind in @('fenced', 'fenced-prefix')) {
+            $env:DSW_FAKE_FINAL_KIND = $fencedKind
+            $fencedOutput = & $runner -Workdir $workdir -Prompt "fake $fencedKind final" -Mode audit -ResultFile $resultPath 2>$null
+            $fencedResult = $fencedOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $fencedResult.final_parse_mode -ne 'markdown_fence_recovered' -or -not $fencedResult.final_schema_valid) {
+                throw "Runner did not recover a valid fenced final kind: $fencedKind"
+            }
+            Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json | Out-Null
+        }
+
         $partialResultPath = Join-Path $workdir 'partial-result.json'
         $env:DSW_FAKE_FINAL_KIND = 'prefix-partial'
         $partialOutput = & $runner -Workdir $workdir -Prompt 'fake prefixed partial' -Mode audit -ResultFile $partialResultPath 2>$null
@@ -747,7 +763,15 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         }
         if (Test-Path -LiteralPath $partialResultPath) { throw 'Runner published a partial claim as a completed ResultFile.' }
 
-        foreach ($invalidKind in @('multiple', 'json-prefix', 'duplicate-field', 'trailing', 'extra-field', 'non-string-array', 'oversized')) {
+        $env:DSW_FAKE_FINAL_KIND = 'fenced-partial'
+        $fencedPartialOutput = & $runner -Workdir $workdir -Prompt 'fake fenced partial' -Mode audit -ResultFile $partialResultPath 2>$null
+        $fencedPartial = $fencedPartialOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $fencedPartial.runner_state -ne 'completed' -or $fencedPartial.worker_claim -ne 'partial' -or -not $fencedPartial.final_schema_valid -or $fencedPartial.final_parse_mode -ne 'markdown_fence_recovered') {
+            throw 'Runner did not preserve a valid partial claim recovered from a Markdown fence.'
+        }
+        if (Test-Path -LiteralPath $partialResultPath) { throw 'Runner published a fenced partial claim as a completed ResultFile.' }
+
+        foreach ($invalidKind in @('multiple', 'json-prefix', 'duplicate-field', 'trailing', 'extra-field', 'non-string-array', 'oversized', 'fenced-trailing', 'fenced-multiple', 'non-json-fence')) {
             $env:DSW_FAKE_FINAL_KIND = $invalidKind
             $rejectedOutput = & $runner -Workdir $workdir -Prompt "fake $invalidKind" -Mode audit 2>$null
             $rejected = $rejectedOutput | Select-Object -Last 1 | ConvertFrom-Json

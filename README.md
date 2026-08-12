@@ -14,7 +14,7 @@ Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI
 $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自行检索、实现、测试、纠错和自审；主 Codex 只验收紧凑证据。范围：……；验收：……。
 ```
 
-### v0.2.3-rc1 更新摘要
+### v0.2.4-rc1 更新摘要
 
 - 强化 `quota-first`：Worker 主做，Codex 按风险验收，避免重复探索。
 - 增加版本、源码 SHA、结果契约和托管文件哈希，Doctor 可识别篡改与不兼容 CLI。
@@ -23,8 +23,9 @@ $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自�
 - 记录耗时、缓存/非缓存 token、命令成败和变更摘要；不自动重试、换模型或降低权限。
 - 同一 Git worktree 禁止并行写入；需要并行时使用独立 worktree。
 - 用 Windows Job Object 托管完整进程树，并新增真实沙箱写入探针，避免后代进程和日志句柄残留。
+- 兼容单个标准 `json` Markdown 围栏，避免把 Schema 完全合法的 Worker 结果误判为失败；其余严格门禁保持不变。
 
-完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)，固定安装包见 [v0.2.3-rc1 Release](../../releases/tag/v0.2.3-rc1)。
+完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)，固定安装包见 [v0.2.4-rc1 Release](../../releases/tag/v0.2.4-rc1)。
 
 ## Problem
 
@@ -98,7 +99,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 The installer does not call the network and never accepts a key on the command line. `Set-DeepSeekKey.ps1` prompts with a masked `Read-Host -AsSecureString` and writes a restricted-ACL key file.
 
-For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.3-rc1 release](../../releases/tag/v0.2.3-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
+For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.4-rc1 release](../../releases/tag/v0.2.4-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
 
 Check health and plan a run:
 

@@ -613,28 +613,44 @@ function ConvertFrom-WorkerFinalText {
         $document = [System.Text.Json.JsonDocument]::Parse($candidate)
     }
     catch [System.Text.Json.JsonException] {
-        $firstObject = $trimmed.IndexOf('{')
-        if ($firstObject -le 0) { throw }
-        $prefix = $trimmed.Substring(0, $firstObject).Trim()
-        if ($prefix.Length -gt 256 -or $prefix -match '[\r\n{}\[\]\x00]' -or $prefix.Contains('```')) {
-            throw 'Worker final message has an unsupported wrapper around JSON.'
+        $fenced = [regex]::Match(
+            $trimmed,
+            '\A(?<prefix>.*?)(?:^|\r?\n)[ \t]*```json[ \t]*\r?\n(?<json>.*)\r?\n[ \t]*```[ \t]*\z',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        if ($fenced.Success) {
+            $prefix = $fenced.Groups['prefix'].Value.Trim()
+            if ($prefix.Length -gt 256 -or $prefix -match '[{}\[\]\x00]' -or $prefix.Contains('```')) {
+                throw 'Worker final message has an unsupported wrapper around JSON.'
+            }
+            $candidate = $fenced.Groups['json'].Value.Trim()
+            $parseMode = 'markdown_fence_recovered'
+            $document = [System.Text.Json.JsonDocument]::Parse($candidate)
         }
-        $prefixIsJson = $false
-        $prefixDocument = $null
-        try {
-            $prefixDocument = [System.Text.Json.JsonDocument]::Parse($prefix)
-            $prefixIsJson = $true
+        else {
+            $firstObject = $trimmed.IndexOf('{')
+            if ($firstObject -le 0) { throw }
+            $prefix = $trimmed.Substring(0, $firstObject).Trim()
+            if ($prefix.Length -gt 256 -or $prefix -match '[\r\n{}\[\]\x00]' -or $prefix.Contains('```')) {
+                throw 'Worker final message has an unsupported wrapper around JSON.'
+            }
+            $prefixIsJson = $false
+            $prefixDocument = $null
+            try {
+                $prefixDocument = [System.Text.Json.JsonDocument]::Parse($prefix)
+                $prefixIsJson = $true
+            }
+            catch [System.Text.Json.JsonException] { }
+            finally {
+                if ($null -ne $prefixDocument) { $prefixDocument.Dispose() }
+            }
+            if ($prefixIsJson) {
+                throw 'Worker final message contains multiple JSON values.'
+            }
+            $candidate = $trimmed.Substring($firstObject).Trim()
+            $parseMode = 'prefix_recovered'
+            $document = [System.Text.Json.JsonDocument]::Parse($candidate)
         }
-        catch [System.Text.Json.JsonException] { }
-        finally {
-            if ($null -ne $prefixDocument) { $prefixDocument.Dispose() }
-        }
-        if ($prefixIsJson) {
-            throw 'Worker final message contains multiple JSON values.'
-        }
-        $candidate = $trimmed.Substring($firstObject).Trim()
-        $parseMode = 'prefix_recovered'
-        $document = [System.Text.Json.JsonDocument]::Parse($candidate)
     }
     try {
         if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {

@@ -1,6 +1,6 @@
 {
   "product": "codex-deepseek-worker",
-  "product_version": "0.2.3-rc1",
+  "product_version": "0.2.4-rc1",
   "runner_contract_version": 3,
   "result_schema_version": 2,
   "adapter_id": "official-deepseek-codex",

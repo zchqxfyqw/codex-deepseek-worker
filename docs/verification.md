@@ -7,7 +7,7 @@
 | Codex CLI | `0.147.0` |
 | Model | `deepseek-v4-flash` |
 | Provider wire API | `responses` |
-| Release candidate | `0.2.3-rc1` / runner contract `3` / result schema `2` |
+| Release candidate | `0.2.4-rc1` / runner contract `3` / result schema `2` |
 | Date | 2026-08-11 |
 | Platform | Windows |
 
