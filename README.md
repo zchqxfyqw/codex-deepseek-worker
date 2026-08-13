@@ -22,7 +22,7 @@ $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自�
 - Worker 触碰运行前脏文件时记录重叠警告，交由主 Codex 针对性复核，不再仅因此强制失败。
 - 保留 PowerShell 7、Job Object、硬超时、进程树清理、Git HEAD/index 门禁、同工作树协调、Key 隔离和默认禁网。
 
-完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)。在 `v0.3.0-rc1` 正式发布前，固定安装包仍以已发布的 [v0.2.4-rc1 Release](../../releases/tag/v0.2.4-rc1) 为准。
+完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)。当前固定安装包请使用 [v0.3.0-rc1 Release](../../releases/tag/v0.3.0-rc1) 中的 ZIP 与 `SHA256SUMS.txt`。
 
 ## Problem
 
@@ -96,7 +96,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 The installer does not call the network and never accepts a key on the command line. `Set-DeepSeekKey.ps1` prompts with a masked `Read-Host -AsSecureString` and writes a restricted-ACL key file.
 
-For a reproducible install before `v0.3.0-rc1` is published, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.4-rc1 release](../../releases/tag/v0.2.4-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
+For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.3.0-rc1 release](../../releases/tag/v0.3.0-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
 
 Check health and plan a run:
 

@@ -46,7 +46,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . 
 
 安装后的 Worker profile 使用 Codex 首选的 `elevated` Windows 沙箱，以可靠写入工作区；首次使用可能需要完成一次原生沙箱初始化，但这不等于用管理员身份运行 Codex。探针只会在工作树根创建、读回并删除一个随机命名的临时文件；失败即停止，不会自动修改 ACL。
 
-在 `v0.3.0-rc1` 正式发布前，需要可复现安装时仍请从已发布的 [v0.2.4-rc1 Release](../../releases/tag/v0.2.4-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`；不要把开发分支当作固定安装包。
+需要可复现安装时，请从 [v0.3.0-rc1 Release](../../releases/tag/v0.3.0-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`；不要把开发分支当作固定安装包。
 
 如需使用企业托管或自定义位置的受限密钥文件，可设置 `CODEX_DEEPSEEK_KEY_FILE`；该变量只包含文件路径，不包含密钥值。
 
