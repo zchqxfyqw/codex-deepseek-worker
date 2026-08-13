@@ -887,7 +887,7 @@ if ($WorkspaceProbe) {
     $probeId = [Guid]::NewGuid().ToString('N')
     $workspaceProbeToken = "DSW_WORKSPACE_PROBE_OK_$probeId"
     $workspaceProbeRelativePath = ".deepseek-worker-probe-$probeId.txt"
-    $workspaceProbeCommand = "& { `$t = Join-Path (Get-Location) '$workspaceProbeRelativePath'; try { [IO.File]::WriteAllText(`$t, '$workspaceProbeToken', [Text.UTF8Encoding]::new(`$false)); if ([IO.File]::ReadAllText(`$t) -ne '$workspaceProbeToken') { throw 'probe readback mismatch' }; Write-Output '$workspaceProbeToken' } finally { if ([IO.File]::Exists(`$t)) { [IO.File]::Delete(`$t) } } }"
+    $workspaceProbeCommand = "& { `$ErrorActionPreference = 'Stop'; `$t = Join-Path (Get-Location) '$workspaceProbeRelativePath'; try { [IO.File]::WriteAllText(`$t, '$workspaceProbeToken', [Text.UTF8Encoding]::new(`$false)); if ([IO.File]::ReadAllText(`$t) -ne '$workspaceProbeToken') { throw 'probe readback mismatch' }; Write-Output '$workspaceProbeToken' } finally { if ([IO.File]::Exists(`$t)) { [IO.File]::Delete(`$t) } } }"
     $Prompt = "Workspace permission probe only. Do not inspect unrelated files. Run exactly this one PowerShell 7 command verbatim and no other tool command: $workspaceProbeCommand Then return a concise summary."
     $Mode = 'implement'
     $Sandbox = 'workspace-write'

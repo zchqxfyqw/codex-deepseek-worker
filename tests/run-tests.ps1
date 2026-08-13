@@ -117,8 +117,13 @@ if ($probeTokenMatch.Success -and $probePathMatch.Success -and -not [string]::Is
         $probeOutput = 'Runner pre-created the probe file outside the sandbox.'
     }
     elseif ($env:DSW_FAKE_WORKSPACE_PROBE_FAIL -eq '1') {
-        $probeExitCode = 1
         $probeOutput = 'Access denied'
+        if ($stdinPrompt -match '\$ErrorActionPreference\s*=\s*''Stop''') {
+            $probeExitCode = 1
+        }
+        else {
+            $probeOutput = "$probeOutput`n$probeToken"
+        }
     }
     else {
         [System.IO.File]::WriteAllText($probePath, $probeToken, [System.Text.UTF8Encoding]::new($false))
@@ -608,6 +613,9 @@ Invoke-Check -Name 'Config template placeholder' -Check {
     }
     if ($configText -notmatch '(?m)^model\s*=\s*"deepseek-v4-flash"') {
         throw 'Profile template does not pin deepseek-v4-flash.'
+    }
+    if ($configText -notmatch '(?ms)^\[windows\]\s*\r?\nsandbox\s*=\s*"elevated"') {
+        throw 'Profile template does not use the Windows elevated sandbox required for workspace writes.'
     }
     if ($configText -match '(?m)^\[mcp_servers\.') {
         throw 'Profile template must not create incomplete MCP server tables.'

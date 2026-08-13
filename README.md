@@ -111,7 +111,7 @@ After a Codex upgrade, or when diagnosing `Access denied`, run one real no-netwo
 pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . -WorkspaceProbe
 ```
 
-It only creates, reads, and removes one random file under `.codex_tmp`; it never repairs ACLs automatically.
+The installed Worker profile uses Codex's preferred `elevated` Windows sandbox for reliable workspace writes. This may require the one-time native sandbox setup, but it does not mean running Codex itself as administrator. The probe creates, reads, and deletes one uniquely named temporary file at the worktree root; it never repairs ACLs automatically.
 
 The skill is installed at `$CODEX_HOME\skills\deepseek-worker` and triggers only when explicitly named as `$deepseek-worker` or when the user explicitly asks for the configured DeepSeek worker.
 
