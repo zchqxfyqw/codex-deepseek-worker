@@ -7,8 +7,8 @@
 | Codex CLI | `0.147.0` |
 | Model | `deepseek-v4-flash` |
 | Provider wire API | `responses` |
-| Release candidate | `0.2.4-rc1` / runner contract `3` / result schema `2` |
-| Date | 2026-08-11 |
+| Release candidate | `0.3.0-rc1` / runner contract `4` |
+| Date | 2026-08-13 |
 | Platform | Windows |
 
 This is a community verification. It does not imply OpenAI or DeepSeek endorsement, and future CLI or API changes may require config updates.
@@ -29,23 +29,25 @@ pwsh ./tests/run-tests.ps1
 The suite covers:
 
 - PowerShell parser errors in `scripts/` and `tests/`
-- JSON parseability for schema, model catalog, and test fixtures
+- JSON parseability for the model catalog and test fixtures
 - Skill frontmatter and `agents/openai.yaml` shape
 - Forbidden personal-path and common-secret patterns
 - Installer `-WhatIf` behavior against temporary environment roots
 - Transactional upgrade backup preservation and installed-file hash verification
-- Strict installed-layout Doctor behavior, managed-file tamper detection, and CLI compatibility rejection
+- Strict installed-layout Doctor behavior, managed-file tamper detection, and CLI compatibility reporting
 - Mode/sandbox mismatch rejection
 - Real-sandbox workspace-probe success and failure handling through the fake CLI contract
 - Windows Job Object cleanup of a deliberately surviving descendant process
-- Fake-CLI validation of malformed versus valid final results, bounded command/usage evidence, prompt cleanup, and atomic `-ResultFile` publication
+- Fake-CLI validation that plain-text, Markdown, malformed, or missing summaries do not override Runner facts; plus nonzero exit, timeout, bounded command/usage evidence, prompt cleanup, and atomic terminal `-ResultFile` publication
 - Skill package file whitelist
 - CI workflow pinned-action and no-secrets checks
 - Required README sections
 
-## Live 0.2.0-rc1 Smoke Test
+## Historical Live 0.2.0-rc1 Smoke Test
 
 The packaged ZIP generated from commit `e742f6b6e5fbe6a71d8251b514a86ad59c6e8128` was installed into a fresh temporary layout and exercised on 2026-08-11 against an isolated temporary Git repository using Codex CLI `0.147.0` and `deepseek-v4-flash`:
+
+This evidence predates the v0.3-lite terminal-envelope design. It remains useful for provider, sandbox, key-isolation, and real-write compatibility, but its model-authored result-schema checks no longer define the current contract.
 
 - `-Doctor` returned `install_ok=true` and `cli_supported=true` for Codex CLI `0.147.0`.
 - A `read-only` structured run completed with exit code 0, read the exact fixture marker, and produced no Git changes.
@@ -60,7 +62,7 @@ During release testing, `codex exec --ignore-user-config` was rejected as a desi
 
 - Run `pwsh ./tests/run-tests.ps1` and confirm exit code 0.
 - Confirm no tracked file contains a machine-specific absolute path or secret.
-- Confirm `skill/deepseek-worker` contains only `SKILL.md`, `agents/openai.yaml`, and `assets/delegation-result.schema.json`.
+- Confirm `skill/deepseek-worker` contains only `SKILL.md` and `agents/openai.yaml`.
 - Confirm the installer dry-run creates no files.
 - Review the pinned GitHub Action SHA before publishing the workflow.
 - Perform one real read-only and one isolated temporary-repository write smoke test with DeepSeek V4 Flash; do not use a production repository.

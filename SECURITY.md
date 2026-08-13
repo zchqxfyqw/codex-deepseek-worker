@@ -17,8 +17,8 @@ Do not open a public issue for security problems. Once the repository is publish
 - The worker shares `CODEX_HOME` so Windows reuses one sandbox account state. A dedicated profile plus CLI-priority overrides pin the DeepSeek provider/model, disable ordinary configured MCP servers and optional features, and strip the main session's thread and permission hooks. This is a practical boundary, not a cryptographic isolation boundary against deliberately unusual or future configuration sources.
 - "Network disabled" applies to tools launched by the Worker. The task prompt and relevant code/context are still sent to the configured DeepSeek API because that is the model provider.
 - Production writes, deployment, database changes, credentials, destructive actions, and material security decisions remain with the main agent and require direct authorization and review.
-- A worker result is a model claim. Treat `runner_state`, command evidence, and Git artifacts as runner facts, and verify claims before acting on them.
+- `summary.txt` is a model claim. Treat the Runner terminal envelope, command evidence, and Git artifacts as observed facts, while still verifying risk-relevant conclusions before acting on them.
 
 ## Release expectations
 
-Public releases must pass the offline static checks in `tests/run-tests.ps1`, must not contain personal paths, secrets, logs, run artifacts, or user content, and must keep the skill package limited to `SKILL.md`, `agents/openai.yaml`, and `assets/`.
+Public releases must pass the offline checks in `tests/run-tests.ps1`, must not contain personal paths, secrets, logs, run artifacts, or user content, and must keep the skill package limited to `SKILL.md` and `agents/openai.yaml`.

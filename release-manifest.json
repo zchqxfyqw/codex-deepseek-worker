@@ -1,8 +1,7 @@
 {
   "product": "codex-deepseek-worker",
-  "product_version": "0.2.4-rc1",
-  "runner_contract_version": 3,
-  "result_schema_version": 2,
+  "product_version": "0.3.0-rc1",
+  "runner_contract_version": 4,
   "adapter_id": "official-deepseek-codex",
   "adapter_version": 1,
   "provider": "deepseek-worker-secure",
@@ -16,7 +15,6 @@
     "config/deepseek-v4-flash.models.json.example",
     "config/deepseek-worker.config.toml.example",
     "skill/deepseek-worker/SKILL.md",
-    "skill/deepseek-worker/agents/openai.yaml",
-    "skill/deepseek-worker/assets/delegation-result.schema.json"
+    "skill/deepseek-worker/agents/openai.yaml"
   ]
 }

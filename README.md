@@ -14,31 +14,28 @@ Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI
 $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自行检索、实现、测试、纠错和自审；主 Codex 只验收紧凑证据。范围：……；验收：……。
 ```
 
-### v0.2.4-rc1 更新摘要
+### v0.3.0-rc1 候选版更新摘要
 
-- 强化 `quota-first`：Worker 主做，Codex 按风险验收，避免重复探索。
-- 增加版本、源码 SHA、结果契约和托管文件哈希，Doctor 可识别篡改与不兼容 CLI。
-- 支持带备份的事务升级；保留 API Key、历史 runs 和独立 Worker。
-- 严格校验最终结果、Prompt 清理、Git HEAD、脏文件重叠与命令证据，失败不误报成功。
-- 记录耗时、缓存/非缓存 token、命令成败和变更摘要；不自动重试、换模型或降低权限。
-- 同一 Git worktree 禁止并行写入；需要并行时使用独立 worktree。
-- 用 Windows Job Object 托管完整进程树，并新增真实沙箱写入探针，避免后代进程和日志句柄残留。
-- 兼容单个标准 `json` Markdown 围栏，避免把 Schema 完全合法的 Worker 结果误判为失败；其余严格门禁保持不变。
+- 保留 `$deepseek-worker` 与 `audit`、`implement`、`quota-first` 的原有用法，删去模型端结构化 JSON 契约。
+- 运行结果只由 Runner 可观测事实判定；`summary.txt` 可以是普通文本或 Markdown，不参与成功/失败判定。
+- `-ResultFile` 对成功、失败和超时都写入 Runner 生成的终态信封，主 Codex 不再依赖模型自报的 `worker_claim` 或 `publishable`。
+- Worker 触碰运行前脏文件时记录重叠警告，交由主 Codex 针对性复核，不再仅因此强制失败。
+- 保留 PowerShell 7、Job Object、硬超时、进程树清理、Git HEAD/index 门禁、同工作树协调、Key 隔离和默认禁网。
 
-完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)，固定安装包见 [v0.2.4-rc1 Release](../../releases/tag/v0.2.4-rc1)。
+完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)。在 `v0.3.0-rc1` 正式发布前，固定安装包仍以已发布的 [v0.2.4-rc1 Release](../../releases/tag/v0.2.4-rc1) 为准。
 
 ## Problem
 
-Main Codex sessions are convenient for open-ended work, but every turn consumes model quota. A bounded task such as "read this module and list the risks", "implement this one change", or "run the offline tests and summarize" does not need to consume premium main-model context. This project runs those tasks in a separate, cheaper worker session and returns a compact, structured evidence bundle that the main session can verify instead of repeating the work.
+Main Codex sessions are convenient for open-ended work, but every turn consumes model quota. A bounded task such as "read this module and list the risks", "implement this one change", or "run the offline tests and summarize" does not need to consume premium main-model context. This project runs those tasks in a separate, cheaper worker session and returns compact runner evidence plus a short model summary that the main session can verify instead of repeating the work.
 
-The runner is intentionally not a general-purpose remote agent. It does not call DeepSeek automatically, does not change the main Codex default model, and does not widen permissions.
+The runner is intentionally not a general-purpose remote agent. It does not call DeepSeek automatically, does not change the main Codex default model, and does not widen permissions. Optional `-ResultFile` and `-RunRoot` paths must be outside the coordinated worktree so Runner artifacts cannot become project changes.
 
 ## Architecture
 
 ```text
 main Codex CLI
   |
-  +-- skill/deepseek-worker (instructions + JSON output schema)
+  +-- skill/deepseek-worker (concise invocation instructions)
   |
   +-- codex-deepseek-exec.ps1  (runner: coordination, artifacts, timeout, diff)
         |
@@ -51,7 +48,7 @@ The install layout is:
 
 ```text
 %LOCALAPPDATA%\CodexDeepSeekWorker\     runner scripts, key file, model catalog, run artifacts
-$CODEX_HOME\skills\deepseek-worker\     SKILL.md, agents/openai.yaml, output schema
+$CODEX_HOME\skills\deepseek-worker\     SKILL.md, agents/openai.yaml
 $CODEX_HOME\deepseek-worker.config.toml transparent reference profile (does not touch config.toml)
 ```
 
@@ -62,9 +59,9 @@ $CODEX_HOME\deepseek-worker.config.toml transparent reference profile (does not 
 
 - The worker session defaults to `read-only`, no network, and `--ephemeral`. `implement` tasks opt into `workspace-write`; network stays off unless the caller explicitly passes `-AllowNetwork`.
 - The worker shares `CODEX_HOME` so Codex reuses one Windows sandbox state, but runs through a dedicated `deepseek-worker` profile. The launcher strips thread and permission environment hooks; pins the provider, model, approvals, and disabled features at CLI priority; disables the Desktop-bundled MCP names; and discovers conventional `[mcp_servers.<name>]` declarations in user/project config so those servers are disabled for the child invocation.
-- The runner records Git before/after state and attributes newly changed files separately from files that were already dirty.
+- The runner records Git before/after state and attributes newly changed files separately from files that were already dirty. Touching a pre-existing dirty file is a review warning, not by itself a failed run.
 - Production writes, deployments, database or schema migrations, credentials, destructive operations, and material security decisions remain under the main Codex agent's direct authorization and review.
-- `worker_claim` and `claimed_verification` in the final bundle are model claims. `runner_state`, command evidence, and Git artifacts are runner facts.
+- Process exit, timeout, cleanup, and Git hard boundaries determine `runner_state`. Command evidence is a Runner fact used by the main Codex for task acceptance, but an intermediate failed command does not alone rewrite a successful process state. `summary.txt` is a non-authoritative model summary and may use plain text or Markdown.
 
 "No network" controls tools started inside the Worker sandbox. The prompt and selected repository context are necessarily sent to the configured DeepSeek API; do not delegate secrets or data that policy forbids sending to that provider.
 
@@ -86,7 +83,7 @@ Prerequisites:
 
 - Windows with a non-Store PowerShell 7 installation (MSI recommended; portable builds can use `CODEX_DEEPSEEK_PWSH_PATH`)
 - Git available on `PATH`
-- Codex CLI `0.147.0` available as `codex` on `PATH` (or `CODEX_DEEPSEEK_CODEX_PATH` set to the `codex.cmd`/`codex.exe` you want to use)
+- Codex CLI available as `codex` on `PATH` (verified with `0.147.0`; other versions produce a warning and should pass `-WorkspaceProbe`), or `CODEX_DEEPSEEK_CODEX_PATH` set to the CLI you want to use
 - A DeepSeek API key
 
 Install from a local clone:
@@ -99,7 +96,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 The installer does not call the network and never accepts a key on the command line. `Set-DeepSeekKey.ps1` prompts with a masked `Read-Host -AsSecureString` and writes a restricted-ACL key file.
 
-For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.4-rc1 release](../../releases/tag/v0.2.4-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
+For a reproducible install before `v0.3.0-rc1` is published, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.2.4-rc1 release](../../releases/tag/v0.2.4-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
 
 Check health and plan a run:
 
@@ -169,7 +166,7 @@ This saves premium-model context only when the main session does not redo the sa
 ## Hard Limits and Failure Behavior
 
 - The complete Worker process tree is held in a Windows Job Object. Default timeout is 45 minutes (2700 seconds); timeout or runner cleanup terminates descendants before artifact collection.
-- `quota-first` requires at least 30 minutes. Five minutes before its hard deadline, the Worker is instructed to stop expanding scope and return a valid completed or partial result.
+- In `quota-first`, the default budget is 45 minutes. The Runner reserves a bounded closeout window (five minutes at the default) for deterministic checks and a concise summary; caller-selected shorter budgets use a proportionally shorter closeout window.
 - The runner requires PowerShell 7, rejects `WindowsApps` Store aliases, prepends the verified runtime to the child `PATH`, and reports the selected path/version in `-Doctor` and run artifacts.
 - There is no automatic retry.
 - Failed checks may be diagnosed and rerun inside the same Worker session. A failed whole run stops: the skill does not automatically redispatch, switch provider, weaken permissions, or make the main agent redo the task.
@@ -182,8 +179,8 @@ This saves premium-model context only when the main session does not redo the sa
 - The runner scripts are Windows-focused (PowerShell process launch, `taskkill` process-tree termination, NTFS ACL handling).
 - The public templates are verified against a specific Codex CLI and DeepSeek model version; later versions may change config or protocol behavior.
 - The worker has no automatic quota budgeting; users control how much work is delegated.
-- A worker result is a model claim; the main session should review the evidence before relying on it.
-- A failed or timed-out run with workspace changes is marked `unverified_partial_changes`; it is never published as a completed `ResultFile` and is not automatically retried, committed, or moved to another worktree. The Worker also leaves Git staging and commits to the main Codex.
+- `summary.txt` is a model-authored aid, not the result authority; the main session should rely on Runner facts and review risk-relevant evidence.
+- A failed or timed-out run with workspace changes is marked `unverified_partial_changes`. `-ResultFile` still receives the Runner's terminal envelope, but the run is not automatically retried, committed, or moved to another worktree. The Worker leaves Git staging and commits to the main Codex.
 - The launcher disables conventional section-based MCP declarations, including the Desktop-bundled names tested here. A deliberately unusual or future configuration source is not a cryptographic isolation boundary; review `-DryRun`, `-Doctor`, and release smoke-test logs after changing Codex configuration or version.
 - The installer does not add the install directory to `PATH`; call scripts by full path.
 
@@ -195,7 +192,7 @@ Upgrade from a newer clone:
 pwsh ./scripts/Install-DeepSeekWorker.ps1 -Force
 ```
 
-`-Force` performs a staged upgrade, records hashes in `installed-manifest.json`, and preserves the replaced managed files in a timestamped rollback backup under the install root. The key and run history are not part of the managed-file replacement set.
+`-Force` performs a staged upgrade, records hashes in `installed-manifest.json`, and preserves the replaced managed files in a timestamped manual-rollback backup under the install root. Failed installation transactions attempt automatic rollback; a successful upgrade leaves the backup for manual recovery. The key and run history are not part of the managed-file replacement set. When using custom `CODEX_HOME`, worker root, or portable PowerShell paths, set the same environment variables during upgrade and uninstall.
 
 Uninstall:
 
@@ -204,7 +201,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Uninstall-DeepSeekWorker.ps1" -WhatI
 pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Uninstall-DeepSeekWorker.ps1" -RemoveKeyFile -RemoveProfileConfig -RemoveRunArtifacts
 ```
 
-By default the key file, per-profile config, and run artifacts are kept. Use the corresponding switches only when you intentionally want to delete them.
+By default the key file, per-profile config, backups, and run artifacts are kept. Use the corresponding switches only when you intentionally want to delete them. Because the profile remains managed state, reinstall after a default uninstall with `-Force`, or uninstall with `-RemoveProfileConfig` when a clean reinstall is intended.
 
 ## Security
 
@@ -216,7 +213,7 @@ For maintainers, [docs/publication-kit.md](docs/publication-kit.md) contains the
 ```text
 scripts/                 launcher, runner, installer, key config, uninstaller
 config/                  per-profile TOML template and model catalog template
-skill/deepseek-worker/   skill package (SKILL.md, agents/openai.yaml, schema)
+skill/deepseek-worker/   skill package (SKILL.md, agents/openai.yaml)
 docs/                    architecture, trust boundary, verification details
 tests/                   offline static tests and CI entry point
 .github/                 CI workflow, issue templates, PR template

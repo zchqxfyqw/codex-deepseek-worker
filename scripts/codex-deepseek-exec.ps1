@@ -6,7 +6,6 @@ param(
     [string]$Prompt,
     [string]$PromptFile,
     [string]$ResultFile,
-    [switch]$StructuredResult,
     [switch]$Ephemeral = $true,
     [switch]$AllowNetwork,
     [switch]$SkipGitRepoCheck,
@@ -51,15 +50,6 @@ function Get-WorkerPaths {
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         Select-Object -First 1
 
-    $schemaCandidates = @(
-        (Join-Path $installRoot 'assets\delegation-result.schema.json'),
-        (Join-Path $codexHome 'skills\deepseek-worker\assets\delegation-result.schema.json'),
-        (Join-Path $PSScriptRoot '..\skill\deepseek-worker\assets\delegation-result.schema.json')
-    )
-    $schema = $schemaCandidates |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-        Select-Object -First 1
-
     $profileCandidates = @(
         (Join-Path $codexHome 'deepseek-worker.config.toml'),
         (Join-Path $PSScriptRoot '..\config\deepseek-worker.config.toml.example')
@@ -72,7 +62,6 @@ function Get-WorkerPaths {
         InstallRoot = $installRoot
         CodexHome = $codexHome
         Launcher = $launcher
-        Schema = $schema
         ProfilePath = $profilePath
         KeyFile = if ($env:CODEX_DEEPSEEK_KEY_FILE) {
             [System.IO.Path]::GetFullPath($env:CODEX_DEEPSEEK_KEY_FILE)
@@ -195,7 +184,7 @@ function Get-PackageMetadata {
 
     $manifestErrors = New-Object System.Collections.Generic.List[string]
     foreach ($requiredName in @(
-        'product', 'product_version', 'runner_contract_version', 'result_schema_version',
+        'product', 'product_version', 'runner_contract_version',
         'adapter_id', 'adapter_version', 'provider', 'model', 'supported_codex_cli_versions'
     )) {
         if ($manifest.PSObject.Properties.Name -notcontains $requiredName -or $null -eq $manifest.$requiredName) {
@@ -533,6 +522,7 @@ function Get-EventEvidence {
     $commands = @()
     $probeCommands = @()
     $usage = $null
+    $parseErrors = 0
     foreach ($line in @(Read-SharedUtf8Lines -Path $EventsPath)) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         try {
@@ -541,6 +531,7 @@ function Get-EventEvidence {
                 $commandText = $event.item.command
                 if ($commandText -is [System.Array]) { $commandText = $commandText -join ' ' }
                 $commands += [ordered]@{
+                    sequence = $commands.Count + 1
                     command = [string]$commandText
                     exit_code = if ($null -ne $event.item.exit_code) { [int]$event.item.exit_code } else { $null }
                     status = [string]$event.item.status
@@ -561,112 +552,16 @@ function Get-EventEvidence {
                 }
             }
         }
-        catch { continue }
+        catch {
+            $parseErrors++
+            continue
+        }
     }
     return [pscustomobject]@{
         Commands = @($commands)
         Usage = $usage
         ProbeCommands = @($probeCommands)
-    }
-}
-
-function Test-WorkerFinal {
-    param([Parameter(Mandatory = $true)]$Value)
-
-    $required = @('status', 'summary', 'changed_files', 'claimed_verification', 'risks_or_followups')
-    $actual = @($Value.PSObject.Properties.Name)
-    if (@($actual | Where-Object { $required -notcontains $_ }).Count -gt 0) {
-        return [pscustomobject]@{ Valid = $false; Error = 'Final result contains unsupported fields.' }
-    }
-    foreach ($name in $required) {
-        if ($Value.PSObject.Properties.Name -notcontains $name) {
-            return [pscustomobject]@{ Valid = $false; Error = "Missing final field: $name" }
-        }
-    }
-    if (@('completed', 'partial', 'blocked') -notcontains [string]$Value.status) {
-        return [pscustomobject]@{ Valid = $false; Error = 'Invalid final status.' }
-    }
-    if ($Value.summary -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$Value.summary)) {
-        return [pscustomobject]@{ Valid = $false; Error = 'Final summary must be a non-empty string.' }
-    }
-    foreach ($name in @('changed_files', 'claimed_verification', 'risks_or_followups')) {
-        if ($null -eq $Value.$name -or $Value.$name -isnot [System.Array]) {
-            return [pscustomobject]@{ Valid = $false; Error = "Final field must be an array: $name" }
-        }
-        if (@($Value.$name | Where-Object { $_ -isnot [string] }).Count -gt 0) {
-            return [pscustomobject]@{ Valid = $false; Error = "Final array values must be strings: $name" }
-        }
-    }
-    return [pscustomobject]@{ Valid = $true; Error = $null }
-}
-
-function ConvertFrom-WorkerFinalText {
-    param([Parameter(Mandatory = $true)][string]$Text)
-
-    if ($Text.Length -gt 262144) {
-        throw 'Worker final message exceeds the 256 KiB limit.'
-    }
-    $trimmed = $Text.Trim()
-    $candidate = $trimmed
-    $parseMode = 'exact'
-    try {
-        $document = [System.Text.Json.JsonDocument]::Parse($candidate)
-    }
-    catch [System.Text.Json.JsonException] {
-        $fenced = [regex]::Match(
-            $trimmed,
-            '\A(?<prefix>.*?)(?:^|\r?\n)[ \t]*```json[ \t]*\r?\n(?<json>.*)\r?\n[ \t]*```[ \t]*\z',
-            [System.Text.RegularExpressions.RegexOptions]::Singleline -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
-        )
-        if ($fenced.Success) {
-            $prefix = $fenced.Groups['prefix'].Value.Trim()
-            if ($prefix.Length -gt 256 -or $prefix -match '[{}\[\]\x00]' -or $prefix.Contains('```')) {
-                throw 'Worker final message has an unsupported wrapper around JSON.'
-            }
-            $candidate = $fenced.Groups['json'].Value.Trim()
-            $parseMode = 'markdown_fence_recovered'
-            $document = [System.Text.Json.JsonDocument]::Parse($candidate)
-        }
-        else {
-            $firstObject = $trimmed.IndexOf('{')
-            if ($firstObject -le 0) { throw }
-            $prefix = $trimmed.Substring(0, $firstObject).Trim()
-            if ($prefix.Length -gt 256 -or $prefix -match '[\r\n{}\[\]\x00]' -or $prefix.Contains('```')) {
-                throw 'Worker final message has an unsupported wrapper around JSON.'
-            }
-            $prefixIsJson = $false
-            $prefixDocument = $null
-            try {
-                $prefixDocument = [System.Text.Json.JsonDocument]::Parse($prefix)
-                $prefixIsJson = $true
-            }
-            catch [System.Text.Json.JsonException] { }
-            finally {
-                if ($null -ne $prefixDocument) { $prefixDocument.Dispose() }
-            }
-            if ($prefixIsJson) {
-                throw 'Worker final message contains multiple JSON values.'
-            }
-            $candidate = $trimmed.Substring($firstObject).Trim()
-            $parseMode = 'prefix_recovered'
-            $document = [System.Text.Json.JsonDocument]::Parse($candidate)
-        }
-    }
-    try {
-        if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
-            throw 'Worker final JSON must be an object.'
-        }
-        $names = @($document.RootElement.EnumerateObject() | ForEach-Object { $_.Name })
-        if (@($names | Group-Object | Where-Object Count -gt 1).Count -gt 0) {
-            throw 'Worker final JSON contains duplicate top-level fields.'
-        }
-    }
-    finally {
-        $document.Dispose()
-    }
-    return [pscustomobject]@{
-        Value = ($candidate | ConvertFrom-Json -ErrorAction Stop)
-        ParseMode = $parseMode
+        ParseErrors = $parseErrors
     }
 }
 
@@ -699,10 +594,10 @@ function Stop-WorkerExecution {
     if ($null -ne $Job) {
         try {
             $Job.Terminate($ExitCode)
-            return
         }
         catch { }
     }
+    Start-Sleep -Milliseconds 100
     if ($null -ne $Child -and $null -ne $StartTicks) {
         Stop-ProcessTree -ProcessId $Child.Id -StartTicks $StartTicks
     }
@@ -737,7 +632,6 @@ function Get-DoctorResult {
     }
 
     $launcherExists = $null -ne $paths.Launcher -and (Test-Path -LiteralPath $paths.Launcher -PathType Leaf)
-    $schemaExists = $null -ne $paths.Schema -and (Test-Path -LiteralPath $paths.Schema -PathType Leaf)
     $profileExists = $null -ne $paths.ProfilePath -and (Test-Path -LiteralPath $paths.ProfilePath -PathType Leaf)
     $keyFileExists = Test-Path -LiteralPath $paths.KeyFile -PathType Leaf
     $skillExists = Test-Path -LiteralPath $paths.SkillPath -PathType Leaf
@@ -763,9 +657,9 @@ function Get-DoctorResult {
         }
     }
     $installOk = [bool](
-        $launcherExists -and $schemaExists -and $profileExists -and $skillExists -and
+        $launcherExists -and $profileExists -and $skillExists -and
         $modelCatalogExists -and $package.ManifestOk -and $package.HashesOk -and
-        $modelPinned -and $responsesApi -and $envKeyProvider -and $cliSupported -and $powerShell7.Ok
+        $modelPinned -and $responsesApi -and $envKeyProvider -and $null -ne $cliVersionNumber -and $powerShell7.Ok
     )
 
     return [ordered]@{
@@ -777,14 +671,12 @@ function Get-DoctorResult {
         package_version = if ($null -ne $manifest) { $manifest.product_version } else { $null }
         source_commit = if ($null -ne $manifest) { $manifest.source_commit } else { $null }
         runner_contract_version = if ($null -ne $manifest) { $manifest.runner_contract_version } else { $null }
-        result_schema_version = if ($null -ne $manifest) { $manifest.result_schema_version } else { $null }
         manifest_path = $package.ManifestPath
         manifest_ok = $package.ManifestOk
         managed_hashes_ok = $package.HashesOk
         manifest_errors = @($package.HashErrors)
         launcher = $paths.Launcher
         launcher_exists = $launcherExists
-        schema_exists = $schemaExists
         profile_exists = $profileExists
         skill_exists = $skillExists
         model_catalog_exists = $modelCatalogExists
@@ -794,6 +686,7 @@ function Get-DoctorResult {
         cli_version = $version
         cli_version_number = $cliVersionNumber
         cli_supported = $cliSupported
+        cli_version_warning = if ($null -ne $cliVersionNumber -and -not $cliSupported) { "Codex CLI $cliVersionNumber is outside the verified matrix; run -WorkspaceProbe before real work." } else { $null }
         supported_cli_versions = @($supportedVersions)
         powershell7_ok = [bool]$powerShell7.Ok
         powershell7_path = $powerShell7.Path
@@ -1007,7 +900,7 @@ if ([IO.File]::ReadAllText(`$target) -ne '$workspaceProbeToken') { throw 'probe 
 [IO.File]::Delete(`$target)
 Write-Output '$workspaceProbeToken'
 "@
-    $Prompt = "Workspace permission probe only. Do not inspect unrelated files. Run exactly one PowerShell 7 command and no other tool command: & (Join-Path (Get-Location) '$workspaceProbeScriptRelativePath'). The script tests $workspaceProbeRelativePath and must output $workspaceProbeToken. Then return the required final JSON."
+    $Prompt = "Workspace permission probe only. Do not inspect unrelated files. Run exactly one PowerShell 7 command and no other tool command: & (Join-Path (Get-Location) '$workspaceProbeScriptRelativePath'). The script tests $workspaceProbeRelativePath and must output $workspaceProbeToken. Then return a concise summary."
     $Mode = 'implement'
     $Sandbox = 'workspace-write'
     $TimeoutSeconds = 300
@@ -1015,12 +908,8 @@ Write-Output '$workspaceProbeToken'
 
 $paths = Get-WorkerPaths
 $launcher = $paths.Launcher
-$schema = $paths.Schema
 if ($null -eq $launcher -or -not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
     throw "DeepSeek Codex launcher not found in: $($paths.InstallRoot)"
-}
-if ($null -eq $schema -or -not (Test-Path -LiteralPath $schema -PathType Leaf)) {
-    throw "DeepSeek Worker result schema not found. Re-run the installer or install the skill."
 }
 
 if ([string]::IsNullOrWhiteSpace($Workdir)) {
@@ -1056,10 +945,6 @@ if ($Mode -eq 'audit' -and $Sandbox -ne 'read-only') {
 if ($Mode -eq 'implement' -and $Sandbox -ne 'workspace-write') {
     throw 'Mode implement requires Sandbox workspace-write.'
 }
-if ($Mode -eq 'quota-first' -and $TimeoutSeconds -lt 1800) {
-    throw 'Mode quota-first requires TimeoutSeconds of at least 1800. Use implement for a shorter bounded task.'
-}
-
 $powerShell7 = Get-PowerShell7Runtime
 if (-not $powerShell7.Ok) {
     throw "DeepSeek Worker requires an executable PowerShell 7 MSI or portable installation. $($powerShell7.Error)"
@@ -1098,12 +983,12 @@ if (-not [string]::IsNullOrWhiteSpace($ResultFile)) {
         throw "ResultFile parent directory does not exist: $resultParent"
     }
     $resolvedResultFile = Get-PhysicalPath -Path $resolvedResultFile
+    if (Test-PathWithinBoundary -Path $resolvedResultFile -Boundary $coordinationRoot) {
+        throw 'ResultFile must be outside the coordinated worktree so Runner evidence cannot mutate the target after its Git snapshot.'
+    }
 }
 
 $coordinationMode = $Sandbox
-if ($null -ne $resolvedResultFile -and (Test-PathWithinBoundary -Path $resolvedResultFile -Boundary $coordinationRoot)) {
-    $coordinationMode = 'workspace-write'
-}
 
 $normalizedCoordinationKey = $coordinationRoot.ToLowerInvariant()
 $hash = (Get-Sha256Text -Text $normalizedCoordinationKey).Substring(0, 24).ToUpperInvariant()
@@ -1114,7 +999,6 @@ $manifest = $package.Manifest
 $productVersion = if ($null -ne $manifest) { [string]$manifest.product_version } else { $null }
 $sourceCommit = if ($null -ne $manifest) { [string]$manifest.source_commit } else { $null }
 $runnerContractVersion = if ($null -ne $manifest) { $manifest.runner_contract_version } else { $null }
-$resultSchemaVersion = if ($null -ne $manifest) { $manifest.result_schema_version } else { $null }
 $gitPreflight = Get-GitSnapshot -Root $gitRoot
 
 if ($DryRun) {
@@ -1140,7 +1024,6 @@ if ($DryRun) {
         product_version = $productVersion
         source_commit = $sourceCommit
         runner_contract_version = $runnerContractVersion
-        result_schema_version = $resultSchemaVersion
         note = 'No API call was made and the prompt body is not displayed.'
     } | ConvertTo-Json -Depth 6 -Compress | Write-Output
     exit 0
@@ -1150,6 +1033,9 @@ if ([string]::IsNullOrWhiteSpace($RunRoot)) {
     $RunRoot = $defaultRunRoot
 }
 $resolvedRunRoot = [System.IO.Path]::GetFullPath($RunRoot)
+if (Test-PathWithinBoundary -Path $resolvedRunRoot -Boundary $coordinationRoot) {
+    throw 'RunRoot must be outside the coordinated worktree so Runner artifacts cannot become project changes.'
+}
 New-Item -ItemType Directory -Path $resolvedRunRoot -Force | Out-Null
 
 $runId = "{0}-{1}" -f ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')), ([Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -1157,53 +1043,18 @@ $runDir = Join-Path $resolvedRunRoot $runId
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
 $statusPath = Join-Path $runDir 'status.json'
-$invocationPath = Join-Path $runDir 'invocation.json'
-$finalPath = Join-Path $runDir 'final.json'
+$summaryPath = Join-Path $runDir 'summary.txt'
 $eventsPath = Join-Path $runDir 'events.jsonl'
 $stderrPath = Join-Path $runDir 'stderr.log'
 $commandsPath = Join-Path $runDir 'commands.json'
-$beforeStatusPath = Join-Path $runDir 'before-status.txt'
-$afterStatusPath = Join-Path $runDir 'after-status.txt'
 $changedFilesPath = Join-Path $runDir 'changed-files.txt'
 $diffStatPath = Join-Path $runDir 'diff-stat.txt'
-$diffPatchPath = Join-Path $runDir 'diff.patch'
-$beforeFingerprintsPath = Join-Path $runDir 'before-fingerprints.json'
-$afterFingerprintsPath = Join-Path $runDir 'after-fingerprints.json'
 $promptStdinPath = Join-Path $runDir 'prompt.stdin'
+$argumentJsonPath = Join-Path $runDir 'child-arguments.json'
 $jobReadyPath = Join-Path $runDir 'job.ready'
 
 $before = $gitPreflight
 $beforeFingerprints = Get-FileFingerprints -Root $gitRoot -RelativePaths $before.ChangedFiles
-Write-Utf8Text -Path $beforeStatusPath -Text (($before.StatusLines -join [Environment]::NewLine) + $(if ($before.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
-Write-JsonAtomic -Path $beforeFingerprintsPath -Value $beforeFingerprints
-
-$invocation = [ordered]@{
-    run_id = $runId
-    workspace_probe = [bool]$WorkspaceProbe
-    correlation_id = $CorrelationId
-    product_version = $productVersion
-    source_commit = $sourceCommit
-    runner_contract_version = $runnerContractVersion
-    result_schema_version = $resultSchemaVersion
-    physical_workdir = $resolvedWorkdir
-    git_root = $gitRoot
-    coordination_root = $coordinationRoot
-    sandbox = $Sandbox
-    coordination_mode = $coordinationMode
-    mode = $Mode
-    network = [bool]$AllowNetwork
-    timeout_seconds = $TimeoutSeconds
-    powershell7_path = $powerShell7.Path
-    powershell7_version = $powerShell7.Version
-    ephemeral = [bool]$Ephemeral
-    provider = 'deepseek-worker-secure'
-    model = 'deepseek-v4-flash'
-    prompt_length = $Prompt.Length
-    prompt_sha256 = Get-Sha256Text -Text $Prompt
-    prompt_persisted = $false
-    created_at_utc = [DateTime]::UtcNow.ToString('o')
-}
-Write-JsonAtomic -Path $invocationPath -Value $invocation
 
 $status = [ordered]@{
     run_id = $runId
@@ -1211,15 +1062,16 @@ $status = [ordered]@{
     product_version = $productVersion
     source_commit = $sourceCommit
     runner_contract_version = $runnerContractVersion
-    result_schema_version = $resultSchemaVersion
     runner_state = 'planned'
     workspace_probe = [bool]$WorkspaceProbe
     workspace_probe_ok = $null
-    worker_claim = $null
     physical_workdir = $resolvedWorkdir
     git_root = $gitRoot
+    artifact_path = $runDir
+    mode = $Mode
     git_index_changed = $false
     branch = $before.Branch
+    branch_after = $null
     head_before = $before.Head
     head_after = $null
     sandbox = $Sandbox
@@ -1237,22 +1089,24 @@ $status = [ordered]@{
     newly_changed_files = @()
     overlap_with_preexisting = @()
     changed_files = @()
-    claimed_verification = @()
-    final_schema_valid = $false
-    final_parse_mode = $null
+    summary_present = $false
+    summary_truncated = $false
+    evidence_complete = $true
+    warnings = @()
     duration_seconds = $null
     usage = $null
     command_total = 0
     command_succeeded = 0
     command_failed = 0
+    commands_truncated = $false
+    event_parse_errors = 0
     failure_reason = $null
     unverified_partial_changes = $false
     prompt_deleted = $false
     command_evidence_path = $commandsPath
-    final_path = $finalPath
+    summary_path = $summaryPath
     events_path = $eventsPath
     diff_stat_path = $diffStatPath
-    diff_patch_path = $diffPatchPath
     note = 'Git artifacts describe repository state. Files already dirty before the run are not attributed solely to the Worker.'
 }
 Write-JsonAtomic -Path $statusPath -Value $status
@@ -1271,6 +1125,8 @@ $runnerState = 'failed'
 $startedAtUtc = [DateTime]::UtcNow
 $endedAtUtc = $null
 $caughtError = $null
+$evidenceComplete = $true
+$warnings = New-Object System.Collections.Generic.List[string]
 
 try {
     $guardAcquired = Enter-CoordinationGuard -Mutex $guard
@@ -1325,12 +1181,13 @@ try {
     $runtimeInstruction = 'Windows runtime: use PowerShell 7 semantics. For non-ASCII text, prefer apply_patch or an explicit UTF-8 writer; never use Windows PowerShell 5.1 text pipelines or heredoc-style workarounds.'
     $gitInstruction = 'Git boundary: use Git only for read-only inspection. Do not stage, commit, push, reset, checkout, switch, stash, clean, merge, rebase, or otherwise change the Git index, HEAD, refs, or shared metadata. Leave edits unstaged for the orchestrating Codex. Do not hide a failing exit code behind a pipeline or trailing output.'
     $timeInstruction = if ($Mode -eq 'quota-first') {
-        $softDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds - 300).ToString('o')
+        $closeoutSeconds = [Math]::Max(1, [Math]::Min(300, [Math]::Floor($TimeoutSeconds * 0.2)))
+        $softDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds - $closeoutSeconds).ToString('o')
         $hardDeadlineUtc = $startedAtUtc.AddSeconds($TimeoutSeconds).ToString('o')
-        "Time budget: hard deadline $hardDeadlineUtc UTC. At $softDeadlineUtc UTC, stop new discovery, optional polish, and nonessential retries. Use the remaining five minutes for critical verification and the final JSON. If work remains, return status partial with precise follow-ups instead of running past the deadline."
+        "Time budget: hard deadline $hardDeadlineUtc UTC. At $softDeadlineUtc UTC, stop new discovery, optional polish, and nonessential retries. Use the remaining closeout window for critical verification and a concise final summary. If work remains, state precise follow-ups instead of running past the deadline."
     }
     else { $null }
-    $Prompt = @($Prompt.TrimEnd(), '', $modeInstruction, $runtimeInstruction, $gitInstruction, $timeInstruction, 'Final output requirement: return exactly one JSON object conforming to the provided output schema. Put only claimed checks in claimed_verification; the runner records command evidence separately. Do not add Markdown fences or prose outside the JSON object.') |
+    $Prompt = @($Prompt.TrimEnd(), '', $modeInstruction, $runtimeInstruction, $gitInstruction, $timeInstruction, 'Final response: give a concise natural-language summary of work completed, checks run, and remaining risks. The runner independently records process, command, and Git evidence; your wording and formatting do not control runner success.') |
         Where-Object { $null -ne $_ } |
         Join-String -Separator "`n"
     Write-Utf8Text -Path $promptStdinPath -Text $Prompt
@@ -1340,9 +1197,8 @@ try {
     $arguments += @('-c', "sandbox_workspace_write.network_access=$networkAccess")
     if ($SkipGitRepoCheck) { $arguments += '--skip-git-repo-check' }
     if ($Ephemeral) { $arguments += '--ephemeral' }
-    $arguments += @('--output-schema', $schema, '--output-last-message', $finalPath, '-')
+    $arguments += @('--output-last-message', $summaryPath, '-')
 
-    $argumentJsonPath = Join-Path $runDir 'child-arguments.json'
     Write-Utf8Text -Path $argumentJsonPath -Text ($arguments | ConvertTo-Json -Compress)
 $childCommand = @'
 $ErrorActionPreference = 'Stop'
@@ -1375,6 +1231,7 @@ exit $LASTEXITCODE
         $env:CODEX_DEEPSEEK_CHILD_ARGS = $argumentJsonPath
         $env:CODEX_DEEPSEEK_JOB_READY = $jobReadyPath
         $child = Start-Process -FilePath $powershellExe -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', $encodedCommand) -RedirectStandardInput $promptStdinPath -RedirectStandardOutput $eventsPath -RedirectStandardError $stderrPath -WindowStyle Hidden -PassThru
+        $childStartTicks = $child.StartTime.ToUniversalTime().Ticks.ToString()
         $workerJob = [CodexDeepSeekRunner.WorkerJob]::new()
         $workerJob.Assign($child)
         Write-Utf8Text -Path $jobReadyPath -Text 'ready'
@@ -1384,21 +1241,6 @@ exit $LASTEXITCODE
         $env:CODEX_DEEPSEEK_CHILD_ARGS = $previousChildArgs
         $env:CODEX_DEEPSEEK_JOB_READY = $previousJobReady
         $env:PATH = $previousPath
-    }
-
-    $childStartTicks = $child.StartTime.ToUniversalTime().Ticks.ToString()
-    $guardAcquired = Enter-CoordinationGuard -Mutex $guard
-    if (-not $guardAcquired) {
-        Stop-WorkerExecution -Job $workerJob -Child $child -StartTicks $childStartTicks -ExitCode 1
-        throw "Could not update the DeepSeek worker registration for: $coordinationRoot"
-    }
-    try {
-        $registration.ProcessId = $child.Id
-        $registration.ProcessStartTimeUtc = $childStartTicks
-        Write-JsonAtomic -Path $registrationPath -Value $registration
-    }
-    finally {
-        $guard.ReleaseMutex()
     }
 
     $status.runner_state = 'running'
@@ -1436,12 +1278,25 @@ catch {
 finally {
     $endedAtUtc = [DateTime]::UtcNow
     if ($null -ne $workerJob) {
-        try { $workerJob.Dispose() }
+        try {
+            if ($null -ne $child -and $child.HasExited) {
+                $workerJob.Terminate(1)
+            }
+        }
         catch {
             $runnerState = 'failed'
             if ($exitCode -eq 0) { $exitCode = 1 }
             $jobMessage = "Worker process job cleanup failed: $($_.Exception.Message)"
             $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $jobMessage } else { "$caughtError; $jobMessage" }
+        }
+        finally {
+            try { $workerJob.Dispose() }
+            catch {
+                $runnerState = 'failed'
+                if ($exitCode -eq 0) { $exitCode = 1 }
+                $jobMessage = "Worker process job disposal failed: $($_.Exception.Message)"
+                $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $jobMessage } else { "$caughtError; $jobMessage" }
+            }
         }
         $workerJob = $null
     }
@@ -1486,27 +1341,7 @@ finally {
         $cleanupMessage = "Prompt cleanup failed: $promptStdinPath"
         $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $cleanupMessage } else { "$caughtError; $cleanupMessage" }
     }
-    if ($registrationCreated -and $null -ne $registrationPath) {
-        try {
-            $cleanupGuardAcquired = Enter-CoordinationGuard -Mutex $guard
-            if ($cleanupGuardAcquired) {
-                try {
-                    Remove-Item -LiteralPath $registrationPath -Force -ErrorAction SilentlyContinue
-                }
-                finally {
-                    $guard.ReleaseMutex()
-                }
-            }
-        }
-        catch {
-            $cleanupMessage = "Worker registration cleanup failed: $($_.Exception.Message)"
-            $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $cleanupMessage } else { "$caughtError; $cleanupMessage" }
-        }
-    }
-    if ($null -ne $guard) {
-        try { $guard.Dispose() }
-        catch { }
-    }
+    Remove-Item -LiteralPath $argumentJsonPath -Force -ErrorAction SilentlyContinue
 }
 
 $after = [pscustomobject]@{
@@ -1520,21 +1355,21 @@ try {
     $after = Get-GitSnapshot -Root $gitRoot
 }
 catch {
+    $evidenceComplete = $false
     $runnerState = 'failed'
     if ($exitCode -eq 0) { $exitCode = 1 }
     $evidenceMessage = "Git evidence collection failed: $($_.Exception.Message)"
     $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $evidenceMessage } else { "$caughtError; $evidenceMessage" }
 }
 $preexistingFiles = @($before.ChangedFiles)
-$changedFiles = @($after.ChangedFiles)
-$newlyChanged = @($changedFiles | Where-Object { $preexistingFiles -notcontains $_ } | Sort-Object -Unique)
+$afterChangedFiles = @($after.ChangedFiles)
+$newlyChanged = @($afterChangedFiles | Where-Object { $preexistingFiles -notcontains $_ } | Sort-Object -Unique)
 $overlap = @()
+$changedFiles = @()
 $gitIndexChanged = [bool]([string]$before.IndexSemanticSha256 -ne [string]$after.IndexSemanticSha256)
 try {
-    Write-Utf8Text -Path $afterStatusPath -Text (($after.StatusLines -join [Environment]::NewLine) + $(if ($after.StatusLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
-    $fingerprintPaths = @($preexistingFiles + $changedFiles | Sort-Object -Unique)
+    $fingerprintPaths = @($preexistingFiles + $afterChangedFiles | Sort-Object -Unique)
     $afterFingerprints = Get-FileFingerprints -Root $gitRoot -RelativePaths $fingerprintPaths
-    Write-JsonAtomic -Path $afterFingerprintsPath -Value $afterFingerprints
     $overlap = @($preexistingFiles | Where-Object {
         $beforeValue = $beforeFingerprints[$_]
         $afterValue = $afterFingerprints[$_]
@@ -1542,9 +1377,11 @@ try {
         [bool]$beforeValue.exists -ne [bool]$afterValue.exists -or
         [string]$beforeValue.sha256 -ne [string]$afterValue.sha256
     } | Sort-Object -Unique)
+    $changedFiles = @($newlyChanged + $overlap | Sort-Object -Unique)
     Write-Utf8Text -Path $changedFilesPath -Text (($changedFiles -join [Environment]::NewLine) + $(if ($changedFiles.Count -gt 0) { [Environment]::NewLine } else { '' }))
 }
 catch {
+    $evidenceComplete = $false
     $runnerState = 'failed'
     if ($exitCode -eq 0) { $exitCode = 1 }
     $evidenceMessage = "Post-run file evidence collection failed: $($_.Exception.Message)"
@@ -1557,32 +1394,32 @@ if ($null -ne $gitRoot -and $null -ne $before.Head -and $before.Head -ne $after.
     $commitMessage = 'Worker changed Git HEAD; commits are not allowed.'
     $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $commitMessage } else { "$caughtError; $commitMessage" }
 }
+if ($null -ne $gitRoot -and [string]$before.Branch -ne [string]$after.Branch) {
+    $runnerState = 'failed'
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    $branchMessage = 'Worker changed the checked-out Git branch; branch mutations are not allowed.'
+    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $branchMessage } else { "$caughtError; $branchMessage" }
+}
 if ($null -ne $gitRoot -and $gitIndexChanged) {
     $runnerState = 'failed'
     if ($exitCode -eq 0) { $exitCode = 1 }
     $indexMessage = 'The Git index changed during the Worker interval; staging is not allowed.'
     $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $indexMessage } else { "$caughtError; $indexMessage" }
 }
-if ($Sandbox -eq 'workspace-write' -and $overlap.Count -gt 0) {
-    $runnerState = 'failed'
-    if ($exitCode -eq 0) { $exitCode = 1 }
-    $overlapMessage = "Worker modified files that were already dirty before the run: $($overlap -join ', ')"
-    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $overlapMessage } else { "$caughtError; $overlapMessage" }
-}
-
 $diffStatLines = @()
-$diffPatchLines = @()
-if ($null -ne $gitRoot) {
+if ($null -ne $gitRoot -and $changedFiles.Count -gt 0) {
     try {
-        $diffStatLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--stat', 'HEAD'))
-        $diffPatchLines = @(Get-GitLines -Root $gitRoot -Arguments @('diff', '--binary', 'HEAD'))
+        $diffArguments = @('diff', '--stat', 'HEAD', '--') + @($changedFiles)
+        $diffStatLines = @(Get-GitLines -Root $gitRoot -Arguments $diffArguments)
         foreach ($line in $after.StatusLines) {
-            if ($line.StartsWith('?? ')) {
-                $diffStatLines += "untracked: $($line.Substring(3).Trim())"
+            $relativePath = if ($line.Length -gt 3) { $line.Substring(3).Trim() } else { '' }
+            if ($line.StartsWith('?? ') -and $changedFiles -contains $relativePath) {
+                $diffStatLines += "untracked: $relativePath"
             }
         }
     }
     catch {
+        $evidenceComplete = $false
         $runnerState = 'failed'
         if ($exitCode -eq 0) { $exitCode = 1 }
         $diffMessage = "Git diff collection failed: $($_.Exception.Message)"
@@ -1591,9 +1428,9 @@ if ($null -ne $gitRoot) {
 }
 try {
     Write-Utf8Text -Path $diffStatPath -Text (($diffStatLines -join [Environment]::NewLine) + $(if ($diffStatLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
-    Write-Utf8Text -Path $diffPatchPath -Text (($diffPatchLines -join [Environment]::NewLine) + $(if ($diffPatchLines.Count -gt 0) { [Environment]::NewLine } else { '' }))
 }
 catch {
+    $evidenceComplete = $false
     $runnerState = 'failed'
     if ($exitCode -eq 0) { $exitCode = 1 }
     $diffMessage = "Git artifact write failed: $($_.Exception.Message)"
@@ -1603,59 +1440,95 @@ catch {
 $commands = @()
 $usage = $null
 $probeCommands = @()
+$eventParseErrors = 0
 try {
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf) -or (Get-Item -LiteralPath $eventsPath).Length -eq 0) {
+        $evidenceComplete = $false
+        $warnings.Add('Codex event stream is missing or empty.')
+    }
     $eventEvidence = Get-EventEvidence -EventsPath $eventsPath
     $commands = @($eventEvidence.Commands)
     $usage = $eventEvidence.Usage
     $probeCommands = @($eventEvidence.ProbeCommands)
-    Write-JsonAtomic -Path $commandsPath -Value $commands
+    $eventParseErrors = [int]$eventEvidence.ParseErrors
+    if ($eventParseErrors -gt 0) {
+        $evidenceComplete = $false
+        $warnings.Add("Skipped $eventParseErrors malformed event record(s).")
+    }
 }
 catch {
-    $runnerState = 'failed'
-    if ($exitCode -eq 0) { $exitCode = 1 }
-    $eventMessage = "Event evidence collection failed: $($_.Exception.Message)"
-    $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $eventMessage } else { "$caughtError; $eventMessage" }
-    try { Write-JsonAtomic -Path $commandsPath -Value @() }
-    catch { }
+    $evidenceComplete = $false
+    $warnings.Add("Event evidence is unavailable: $($_.Exception.Message)")
 }
 $commandSucceeded = @($commands | Where-Object { $_.exit_code -eq 0 }).Count
 $commandFailed = @($commands | Where-Object { $null -ne $_.exit_code -and $_.exit_code -ne 0 }).Count
 
-$workerClaim = $null
-$claimedVerification = @()
-$workerSummary = $null
-$workerRisks = @()
-$finalSchemaValid = $false
-$finalParseMode = $null
-if (Test-Path -LiteralPath $finalPath -PathType Leaf) {
-    try {
-        if ((Get-Item -LiteralPath $finalPath).Length -gt 262144) {
-            throw 'Worker final message exceeds the 256 KiB limit.'
+$boundedCommands = @(
+    @($commands | Where-Object { $_.exit_code -eq 0 } | Select-Object -Last 50) +
+    @($commands | Where-Object { $null -ne $_.exit_code -and $_.exit_code -ne 0 } | Select-Object -Last 20) |
+        Sort-Object sequence |
+        ForEach-Object {
+            $commandText = [string]$_.command
+            if ($commandText.Length -gt 500) { $commandText = $commandText.Substring(0, 497) + '...' }
+            [ordered]@{
+                sequence = $_.sequence
+                command = $commandText
+                exit_code = $_.exit_code
+                status = $_.status
+            }
         }
-        $parsedFinal = ConvertFrom-WorkerFinalText -Text (Get-Content -LiteralPath $finalPath -Raw)
-        $workerFinal = $parsedFinal.Value
-        $finalParseMode = $parsedFinal.ParseMode
-        $finalCheck = Test-WorkerFinal -Value $workerFinal
-        if (-not $finalCheck.Valid) { throw $finalCheck.Error }
-        $finalSchemaValid = $true
-        $workerClaim = [string]$workerFinal.status
-        $workerSummary = [string]$workerFinal.summary
-        $claimedVerification = @($workerFinal.claimed_verification)
-        $workerRisks = @($workerFinal.risks_or_followups)
+)
+$commandsTruncated = [bool]($commands.Count -gt $boundedCommands.Count)
+try {
+    Write-JsonAtomic -Path $commandsPath -Value ([ordered]@{
+        total = $commands.Count
+        succeeded = $commandSucceeded
+        failed = $commandFailed
+        truncated = $commandsTruncated
+        commands = @($boundedCommands)
+    })
+}
+catch {
+    $evidenceComplete = $false
+    $warnings.Add("Command evidence could not be written: $($_.Exception.Message)")
+}
+
+$summaryPresent = $false
+$summaryTruncated = $false
+$summaryLimit = 65536
+try {
+    if (Test-Path -LiteralPath $summaryPath -PathType Leaf) {
+        $reader = [System.IO.StreamReader]::new($summaryPath, [System.Text.UTF8Encoding]::new($false), $true)
+        try {
+            $buffer = New-Object char[] $summaryLimit
+            $characterCount = $reader.ReadBlock($buffer, 0, $buffer.Length)
+            $summaryText = [string]::new($buffer, 0, $characterCount)
+            $summaryTruncated = $reader.Read() -ne -1
+        }
+        finally { $reader.Dispose() }
+        $summaryPresent = -not [string]::IsNullOrWhiteSpace($summaryText)
+        if ($summaryTruncated) {
+            Write-Utf8Text -Path $summaryPath -Text ($summaryText + "`n`n[summary truncated by runner]")
+            $warnings.Add('Worker summary was truncated to 65,536 characters.')
+        }
     }
-    catch {
-        $workerRisks += "The worker final message was not valid against the expected JSON contract: $($_.Exception.Message)"
+    else {
+        Write-Utf8Text -Path $summaryPath -Text ''
     }
 }
-else {
-    $workerRisks += 'The worker did not produce a final result file.'
+catch {
+    $evidenceComplete = $false
+    $warnings.Add("Worker summary is unavailable: $($_.Exception.Message)")
+    try {
+        if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { Write-Utf8Text -Path $summaryPath -Text '' }
+    }
+    catch { }
 }
-if (-not [string]::IsNullOrWhiteSpace($caughtError)) {
-    $workerRisks += $caughtError
+if (-not $summaryPresent) {
+    $warnings.Add('Worker did not provide a non-empty final summary; process and Git evidence remain authoritative.')
 }
-if (-not $finalSchemaValid -and $runnerState -eq 'completed' -and -not $WorkspaceProbe) {
-    $runnerState = 'failed'
-    if ($exitCode -eq 0) { $exitCode = 1 }
+if ($overlap.Count -gt 0) {
+    $warnings.Add("Worker touched files that were already dirty before the run; review those files carefully: $($overlap -join ', ')")
 }
 
 $workspaceProbeOk = $null
@@ -1675,17 +1548,55 @@ if ($WorkspaceProbe) {
     if (-not $workspaceProbeOk) {
         $runnerState = 'failed'
         if ($exitCode -eq 0) { $exitCode = 1 }
-        $workerRisks += 'Workspace probe failed: the sandbox did not complete the create/read/delete round trip.'
+        $probeMessage = 'Workspace probe failed: the sandbox did not complete the create/read/delete round trip.'
+        $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $probeMessage } else { "$caughtError; $probeMessage" }
     }
 }
 
+if ($registrationCreated -and $null -ne $registrationPath) {
+    try {
+        $cleanupGuardAcquired = Enter-CoordinationGuard -Mutex $guard
+        if (-not $cleanupGuardAcquired) { throw 'Could not acquire the coordination guard for terminal cleanup.' }
+        try {
+            Remove-Item -LiteralPath $registrationPath -Force -ErrorAction Stop
+        }
+        finally {
+            $guard.ReleaseMutex()
+        }
+    }
+    catch {
+        $warnings.Add("Worker registration cleanup was deferred: $($_.Exception.Message)")
+    }
+}
+if ($null -ne $guard) {
+    try { $guard.Dispose() }
+    catch { }
+}
+
 $durationSeconds = if ($null -ne $endedAtUtc) { [math]::Round(($endedAtUtc - $startedAtUtc).TotalSeconds, 3) } else { $null }
-$publishable = [bool]($runnerState -eq 'completed' -and $finalSchemaValid -and $workerClaim -eq 'completed')
-$unverifiedPartialChanges = [bool](-not $publishable -and $changedFiles.Count -gt 0)
+$unverifiedPartialChanges = [bool]($runnerState -ne 'completed' -and $changedFiles.Count -gt 0)
+$failureReason = $null
+if ($runnerState -ne 'completed') {
+    $failureReason = if (-not [string]::IsNullOrWhiteSpace($caughtError)) {
+        $caughtError
+    }
+    elseif ($runnerState -eq 'timed_out') {
+        "Worker exceeded the $TimeoutSeconds second hard timeout."
+    }
+    elseif ($runnerState -eq 'interrupted') {
+        'Worker execution was interrupted.'
+    }
+    else {
+        "Worker process exited with code $exitCode."
+    }
+}
+elseif (-not [string]::IsNullOrWhiteSpace($caughtError)) {
+    $warnings.Add($caughtError)
+}
 
 $status.runner_state = $runnerState
 $status.workspace_probe_ok = $workspaceProbeOk
-$status.worker_claim = $workerClaim
+$status.branch_after = $after.Branch
 $status.head_after = $after.Head
 $status.ended_at_utc = $endedAtUtc.ToString('o')
 $status.exit_code = $exitCode
@@ -1694,72 +1605,38 @@ $status.newly_changed_files = @($newlyChanged)
 $status.overlap_with_preexisting = @($overlap)
 $status.changed_files = @($changedFiles)
 $status.git_index_changed = $gitIndexChanged
-$status.claimed_verification = @($claimedVerification)
-$status.final_schema_valid = $finalSchemaValid
-$status.final_parse_mode = $finalParseMode
 $status.duration_seconds = $durationSeconds
 $status.usage = $usage
 $status.command_total = $commands.Count
 $status.command_succeeded = $commandSucceeded
 $status.command_failed = $commandFailed
-$status.failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
+$status.commands_truncated = $commandsTruncated
+$status.event_parse_errors = $eventParseErrors
+$status.summary_present = $summaryPresent
+$status.summary_truncated = $summaryTruncated
+$status.evidence_complete = $evidenceComplete
+$status.warnings = @($warnings)
+$status.failure_reason = $failureReason
 $status.unverified_partial_changes = $unverifiedPartialChanges
 $status.prompt_deleted = $promptDeleted
 Write-JsonAtomic -Path $statusPath -Value $status
 
-$verifiedCommands = @($commands | Where-Object { $_.exit_code -eq 0 } | Select-Object -Last 12 | ForEach-Object {
-    $text = [string]$_.command
-    if ($text.Length -gt 240) { $text = $text.Substring(0, 237) + '...' }
-    [ordered]@{ command = $text; exit_code = $_.exit_code }
-})
-$failedCommands = @($commands | Where-Object { $null -ne $_.exit_code -and $_.exit_code -ne 0 } | Select-Object -Last 12 | ForEach-Object {
-    $text = [string]$_.command
-    if ($text.Length -gt 240) { $text = $text.Substring(0, 237) + '...' }
-    [ordered]@{ command = $text; exit_code = $_.exit_code }
-})
-
-if ($null -ne $resolvedResultFile -and $publishable) {
-    $temporaryResultFile = "$resolvedResultFile.$([Guid]::NewGuid().ToString('N')).tmp"
-    Write-Utf8Text -Path $temporaryResultFile -Text ($workerFinal | ConvertTo-Json -Depth 20 -Compress)
-    Move-Item -LiteralPath $temporaryResultFile -Destination $resolvedResultFile -Force
+if ($null -ne $resolvedResultFile) {
+    try {
+        Write-JsonAtomic -Path $resolvedResultFile -Value $status
+    }
+    catch {
+        $evidenceComplete = $false
+        $runnerState = 'failed'
+        if ($exitCode -eq 0) { $exitCode = 1 }
+        $status.runner_state = $runnerState
+        $status.exit_code = $exitCode
+        $status.evidence_complete = $false
+        $status.failure_reason = "ResultFile could not be written: $($_.Exception.Message)"
+        $status.warnings = @($warnings)
+        Write-JsonAtomic -Path $statusPath -Value $status
+    }
 }
 
-$compactResult = [ordered]@{
-    run_id = $runId
-    correlation_id = $CorrelationId
-    product_version = $productVersion
-    source_commit = $sourceCommit
-    runner_contract_version = $runnerContractVersion
-    result_schema_version = $resultSchemaVersion
-    runner_state = $runnerState
-    workspace_probe = [bool]$WorkspaceProbe
-    workspace_probe_ok = $workspaceProbeOk
-    worker_claim = $workerClaim
-    final_schema_valid = $finalSchemaValid
-    final_parse_mode = $finalParseMode
-    exit_code = $exitCode
-    duration_seconds = $durationSeconds
-    usage = $usage
-    summary = $workerSummary
-    changed_files = @($changedFiles)
-    newly_changed_files = @($newlyChanged)
-    overlap_with_preexisting = @($overlap)
-    git_index_changed = $gitIndexChanged
-    diff_stat = @($diffStatLines)
-    command_total = $commands.Count
-    command_succeeded = $commandSucceeded
-    command_failed = $commandFailed
-    verified_commands = @($verifiedCommands)
-    failed_commands = @($failedCommands)
-    commands_truncated = [bool]($commands.Count -gt ($verifiedCommands.Count + $failedCommands.Count))
-    claimed_verification = @($claimedVerification)
-    risks = @($workerRisks)
-    failure_reason = if ($runnerState -eq 'completed') { $null } else { ($workerRisks -join '; ') }
-    unverified_partial_changes = $unverifiedPartialChanges
-    powershell7_path = $powerShell7.Path
-    powershell7_version = $powerShell7.Version
-    prompt_deleted = $promptDeleted
-    artifact_path = $runDir
-}
-$compactResult | ConvertTo-Json -Depth 8 -Compress | Write-Output
+$status | ConvertTo-Json -Depth 8 -Compress | Write-Output
 exit $exitCode

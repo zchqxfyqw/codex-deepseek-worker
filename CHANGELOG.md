@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0-rc1] - 2026-08-13
+
+### Changed
+
+- Keep the existing `$deepseek-worker` invocation and `audit`, `implement`, and `quota-first` modes while simplifying the handoff to a facts-first Runner contract.
+- Make Runner-observed process exit, timeout, cleanup, and Git hard boundaries authoritative for `runner_state`; keep command evidence for task acceptance without treating every intermediate failure as a failed run.
+- Store the Worker's final prose as bounded `summary.txt`; plain text, Markdown, missing text, or malformed JSON no longer changes an otherwise valid process outcome.
+- Write a Runner-generated terminal envelope atomically to `status.json` and optional `-ResultFile` for every terminal outcome.
+- Record edits overlapping pre-existing dirty files as targeted-review warnings instead of automatically failing the run. Changed Git HEAD or index remains a hard boundary.
+- Keep the compact default review set to `status.json`, `summary.txt`, `changed-files.txt`, `diff-stat.txt`, and `commands.json`; reserve event and stderr streams for diagnostics.
+
+### Removed
+
+- Remove the model-authored final JSON Schema and its parser/recovery layers.
+- Remove `worker_claim`, `claimed_verification`, `final_schema_valid`, `final_parse_mode`, and model-authored `publishable` from the active result contract.
+
+### Fixed
+
+- Keep the per-worktree registration through terminal evidence collection, capture child identity before Job assignment, and guarantee Job disposal even when termination reports an error.
+- Preserve packaged source identity during ZIP installs, transactionally retire the old result Schema, and keep API keys and historical runs untouched during upgrades.
+
 ## [0.2.4-rc1] - 2026-08-12
 
 ### Fixed

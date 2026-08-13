@@ -37,8 +37,29 @@ function Push-WorkerTestEnvironment {
     param([Parameter(Mandatory = $true)][string]$BasePath)
 
     $previous = [ordered]@{}
-    foreach ($name in @('LOCALAPPDATA', 'CODEX_HOME', 'CODEX_DEEPSEEK_WORKER_ROOT', 'CODEX_DEEPSEEK_CODEX_PATH', 'CODEX_DEEPSEEK_KEY_FILE', 'CODEX_DEEPSEEK_PWSH_PATH', 'DSW_FAKE_WORKSPACE_PROBE_FAIL', 'DSW_FAKE_DESCENDANT_PID', 'DSW_FAKE_DESCENDANT_LATE_FILE')) {
+    $names = @(
+        'LOCALAPPDATA',
+        'CODEX_HOME',
+        'CODEX_DEEPSEEK_WORKER_ROOT',
+        'CODEX_DEEPSEEK_CODEX_PATH',
+        'CODEX_DEEPSEEK_KEY_FILE',
+        'CODEX_DEEPSEEK_PWSH_PATH',
+        'DSW_FAKE_WORKSPACE_PROBE_FAIL',
+        'DSW_FAKE_DESCENDANT_PID',
+        'DSW_FAKE_DESCENDANT_LATE_FILE',
+        'DSW_FAKE_FINAL_KIND',
+        'DSW_FAKE_RUNTIME_CAPTURE',
+        'DSW_FAKE_PROMPT_CAPTURE',
+        'DSW_FAKE_GIT_MUTATION',
+        'DSW_FAKE_TOUCH_RELATIVE',
+        'DSW_FAKE_COMMAND_COUNT',
+        'DSW_FAKE_EVENTS_KIND'
+    )
+    foreach ($name in $names) {
         $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ($name.StartsWith('DSW_FAKE_', [System.StringComparison]::Ordinal)) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        }
     }
     $env:LOCALAPPDATA = Join-Path $BasePath 'localappdata'
     $env:CODEX_HOME = Join-Path $BasePath 'codexhome'
@@ -116,9 +137,20 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_DESCENDANT_PID) -and -not [s
     $descendant = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-Command', $lateCommand) -WindowStyle Hidden -PassThru
     [System.IO.File]::WriteAllText($env:DSW_FAKE_DESCENDANT_PID, [string]$descendant.Id, [System.Text.UTF8Encoding]::new($false))
 }
-if (@('index', 'worktree') -contains $env:DSW_FAKE_GIT_MUTATION -and -not [string]::IsNullOrWhiteSpace($workdir)) {
-    [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-index-change.txt'), 'index changed', [System.Text.UTF8Encoding]::new($false))
-    if ($env:DSW_FAKE_GIT_MUTATION -eq 'index') { & git -C $workdir add worker-index-change.txt }
+    if (@('index', 'worktree', 'head', 'branch') -contains $env:DSW_FAKE_GIT_MUTATION -and -not [string]::IsNullOrWhiteSpace($workdir)) {
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'worker-index-change.txt'), 'index changed', [System.Text.UTF8Encoding]::new($false))
+        if ($env:DSW_FAKE_GIT_MUTATION -eq 'index') { & git -C $workdir add worker-index-change.txt }
+        if ($env:DSW_FAKE_GIT_MUTATION -eq 'head') {
+            & git -C $workdir add worker-index-change.txt
+            & git -C $workdir commit -q -m worker-head-change
+        }
+        if ($env:DSW_FAKE_GIT_MUTATION -eq 'branch') {
+            Remove-Item -LiteralPath (Join-Path $workdir 'worker-index-change.txt') -Force
+            & git -C $workdir switch -q -c worker-branch-change
+        }
+}
+if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_TOUCH_RELATIVE) -and -not [string]::IsNullOrWhiteSpace($workdir)) {
+    Add-Content -LiteralPath (Join-Path $workdir $env:DSW_FAKE_TOUCH_RELATIVE) -Value 'worker edit'
 }
 if ($env:DSW_FAKE_FINAL_KIND -eq 'timeout') {
     if (-not [string]::IsNullOrWhiteSpace($workdir)) {
@@ -131,36 +163,41 @@ if ($env:DSW_FAKE_FINAL_KIND -eq 'timeout') {
 $finalIndex = [Array]::IndexOf([string[]]$Rest, '--output-last-message')
 if ($finalIndex -lt 0 -or $finalIndex + 1 -ge $Rest.Count) { throw 'Missing --output-last-message.' }
 $finalPath = $Rest[$finalIndex + 1]
-if ($env:DSW_FAKE_FINAL_KIND -eq 'invalid') {
-    [System.IO.File]::WriteAllText($finalPath, '{}', [System.Text.UTF8Encoding]::new($false))
+$fence = ([char]96).ToString() * 3
+$summary = switch ($env:DSW_FAKE_FINAL_KIND) {
+    'missing' { $null }
+    'markdown' { "# Completed`n`n- Tests passed.`n- No publish was attempted." }
+    'fenced' { "${fence}json`n{`"status`":`"completed`"}`n$fence" }
+    'invalid' { '{}' }
+    'oversized' { 'x' * 70000 }
+    default { 'Fake worker completed.' }
 }
-else {
-    $final = [ordered]@{
-        status = if (@('partial', 'prefix-partial', 'fenced-partial') -contains $env:DSW_FAKE_FINAL_KIND) { 'partial' } else { 'completed' }
-        summary = 'Fake worker completed.'
-        changed_files = @()
-        claimed_verification = @('fake-check')
-        risks_or_followups = @()
-    }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'extra-field') { $final.extra = 'rejected' }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'non-string-array') { $final.claimed_verification = @('fake-check', 1) }
-    $final = $final | ConvertTo-Json -Compress
-    $fence = ([char]96).ToString() * 3
-    if (@('prefix', 'prefix-partial') -contains $env:DSW_FAKE_FINAL_KIND) { $final = "Brief result follows.`n`n$final" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced') { $final = "${fence}json`n$final`n$fence" }
-    if (@('fenced-prefix', 'fenced-partial') -contains $env:DSW_FAKE_FINAL_KIND) { $final = "All scoped work is complete.`n`n${fence}json`n$final`n$fence" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced-trailing') { $final = "${fence}json`n$final`n$fence trailing" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'fenced-multiple') { $final = "${fence}json`n$final`n$fence `n${fence}json`n$final`n$fence" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'non-json-fence') { $final = "${fence}text`n$final`n$fence" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'multiple') { $final = "$final`n$final" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'json-prefix') { $final = "[] $final" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'duplicate-field') { $final = $final.Insert(1, '"status":"completed",') }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'trailing') { $final = "$final trailing" }
-    if ($env:DSW_FAKE_FINAL_KIND -eq 'oversized') { $final = 'x' * 262145 }
-    [System.IO.File]::WriteAllText($finalPath, $final, [System.Text.UTF8Encoding]::new($false))
+if ($null -ne $summary) {
+    [System.IO.File]::WriteAllText($finalPath, $summary, [System.Text.UTF8Encoding]::new($false))
 }
-Write-Output '{"type":"item.completed","item":{"type":"command_execution","command":"fake-check","exit_code":0,"status":"completed"}}'
+if ($env:DSW_FAKE_EVENTS_KIND -eq 'empty') { exit 0 }
+if ($env:DSW_FAKE_EVENTS_KIND -eq 'malformed') {
+    Write-Output 'not-json'
+    exit 0
+}
+$commandCount = 1
+if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_COMMAND_COUNT)) {
+    $commandCount = [int]$env:DSW_FAKE_COMMAND_COUNT
+}
+for ($i = 1; $i -le $commandCount; $i++) {
+    $commandExit = if ($i % 4 -eq 0) { 9 } else { 0 }
+    [ordered]@{
+        type = 'item.completed'
+        item = [ordered]@{
+            type = 'command_execution'
+            command = "fake-check-$i"
+            exit_code = $commandExit
+            status = 'completed'
+        }
+    } | ConvertTo-Json -Compress -Depth 5 | Write-Output
+}
 Write-Output '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":100,"output_tokens":30,"reasoning_output_tokens":5}}'
+if ($env:DSW_FAKE_FINAL_KIND -eq 'nonzero') { exit 7 }
 exit 0
 '@
     [System.IO.File]::WriteAllText($Path, $template.Replace('__VERSION__', $Version), [System.Text.UTF8Encoding]::new($false))
@@ -207,22 +244,18 @@ Invoke-Check -Name 'Skill openai.yaml' -Check {
     if ($yamlText -notmatch '(?m)^\s*allow_implicit_invocation:\s*false\s*$') { throw 'agents/openai.yaml must set allow_implicit_invocation: false.' }
 }
 
-Invoke-Check -Name 'Output schema shape' -Check {
-    $schema = Get-Content -LiteralPath (Join-Path $repoRoot 'skill\deepseek-worker\assets\delegation-result.schema.json') -Raw | ConvertFrom-Json
-    $required = @('status', 'summary', 'changed_files', 'claimed_verification', 'risks_or_followups')
-    foreach ($field in $required) {
-        if ($schema.required -notcontains $field) {
-            throw "Schema is missing required field: $field"
-        }
-    }
-}
-
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.2.4-rc1') { throw 'Unexpected release version.' }
-    if ([int]$manifest.runner_contract_version -ne 3 -or [int]$manifest.result_schema_version -ne 2) {
-        throw 'Release contract versions are not pinned to v2.'
+    if ($manifest.product_version -ne '0.3.0-rc1') { throw 'Unexpected release version.' }
+    if ([int]$manifest.runner_contract_version -ne 4) {
+        throw 'Release runner contract is not pinned to v4.'
+    }
+    if ($manifest.PSObject.Properties.Name -contains 'result_schema_version') {
+        throw 'Release manifest still exposes the removed model-result schema.'
+    }
+    if (($manifest.managed_files -join '|') -match 'delegation-result\.schema\.json') {
+        throw 'Release manifest still manages the removed model-result schema.'
     }
     if (@($manifest.supported_codex_cli_versions) -notcontains '0.147.0') {
         throw 'Release manifest does not declare the verified Codex CLI version.'
@@ -310,12 +343,10 @@ Invoke-Check -Name 'Installer temp install' -Check {
             (Join-Path $installRoot 'codex-deepseek-exec.ps1'),
             (Join-Path $installRoot 'Set-DeepSeekKey.ps1'),
             (Join-Path $installRoot 'Uninstall-DeepSeekWorker.ps1'),
-            (Join-Path $installRoot 'assets\delegation-result.schema.json'),
             (Join-Path $installRoot 'models.json'),
             (Join-Path $tempBase 'codexhome\deepseek-worker.config.toml'),
             (Join-Path $skillRoot 'SKILL.md'),
-            (Join-Path $skillRoot 'agents\openai.yaml'),
-            (Join-Path $skillRoot 'assets\delegation-result.schema.json')
+            (Join-Path $skillRoot 'agents\openai.yaml')
         )) {
             if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) {
                 throw "Installer did not create $expected"
@@ -342,6 +373,40 @@ Invoke-Check -Name 'Installer temp install' -Check {
     }
 }
 
+Invoke-Check -Name 'Installer trusts packaged source commit outside Git' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-package-install-' + [Guid]::NewGuid().ToString('N'))
+    $packageRoot = Join-Path $tempBase 'outer-repo\release'
+    New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath (Join-Path $tempBase 'target')
+    try {
+        $outerRoot = Split-Path -Parent $packageRoot
+        & git -C $outerRoot init -q
+        & git -C $outerRoot config user.email 'offline-test@example.invalid'
+        & git -C $outerRoot config user.name 'Offline Test'
+        [System.IO.File]::WriteAllText((Join-Path $outerRoot 'outer.txt'), 'unrelated repository')
+        & git -C $outerRoot add outer.txt
+        & git -C $outerRoot commit -q -m outer-fixture
+        foreach ($relativePath in @('scripts', 'config', 'skill', 'release-manifest.json')) {
+            Copy-Item -LiteralPath (Join-Path $repoRoot $relativePath) -Destination (Join-Path $packageRoot $relativePath) -Recurse
+        }
+        $packageManifestPath = Join-Path $packageRoot 'release-manifest.json'
+        $packageManifest = Get-Content -LiteralPath $packageManifestPath -Raw | ConvertFrom-Json
+        $packageCommit = '0123456789abcdef0123456789abcdef01234567'
+        $packageManifest | Add-Member -NotePropertyName source_commit -NotePropertyValue $packageCommit -Force
+        [System.IO.File]::WriteAllText($packageManifestPath, ($packageManifest | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+
+        & (Join-Path $packageRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        $installed = Get-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'installed-manifest.json') -Raw | ConvertFrom-Json
+        if ($installed.source_commit -ne $packageCommit) {
+            throw 'Installer replaced the packaged source commit with an enclosing Git repository commit.'
+        }
+    }
+    finally {
+        Pop-WorkerTestEnvironment -Previous $previous
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-upgrade-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
@@ -349,7 +414,19 @@ Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
     try {
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
         $launcher = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek.ps1'
+        $obsoleteInstallSchema = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'assets\delegation-result.schema.json'
+        $obsoleteSkillSchema = Join-Path $env:CODEX_HOME 'skills\deepseek-worker\assets\delegation-result.schema.json'
+        $keyPath = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'
+        $runMarker = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'runs\upgrade-preserve.marker'
         Add-Content -LiteralPath $launcher -Value '# local-upgrade-marker'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $obsoleteInstallSchema) -Force | Out-Null
+        New-Item -ItemType Directory -Path (Split-Path -Parent $obsoleteSkillSchema) -Force | Out-Null
+        New-Item -ItemType Directory -Path (Split-Path -Parent $runMarker) -Force | Out-Null
+        [System.IO.File]::WriteAllText($obsoleteInstallSchema, '{"legacy":true}')
+        [System.IO.File]::WriteAllText($obsoleteSkillSchema, '{"legacy":true}')
+        [System.IO.File]::WriteAllText($keyPath, 'test-placeholder-not-a-real-key')
+        [System.IO.File]::WriteAllText($runMarker, 'preserve-run-history')
+        $keyHashBefore = (Get-FileHash -LiteralPath $keyPath -Algorithm SHA256).Hash
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -Force *> $null
 
         $installed = Get-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'installed-manifest.json') -Raw | ConvertFrom-Json
@@ -362,6 +439,20 @@ Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
         }
         if ((Get-Content -LiteralPath $launcher -Raw) -match 'local-upgrade-marker') {
             throw 'Upgrade did not install the staged release launcher.'
+        }
+        if ((Test-Path -LiteralPath $obsoleteInstallSchema) -or (Test-Path -LiteralPath $obsoleteSkillSchema)) {
+            throw 'Upgrade did not remove the obsolete model-result schema.'
+        }
+        foreach ($obsoletePath in @($obsoleteInstallSchema, $obsoleteSkillSchema)) {
+            if (-not (@($restoreMap.destination) -contains $obsoletePath)) {
+                throw "Upgrade backup omitted retired managed file: $obsoletePath"
+            }
+        }
+        if ((Get-FileHash -LiteralPath $keyPath -Algorithm SHA256).Hash -ne $keyHashBefore) {
+            throw 'Upgrade changed the existing key file.'
+        }
+        if ((Get-Content -LiteralPath $runMarker -Raw) -ne 'preserve-run-history') {
+            throw 'Upgrade changed existing run history.'
         }
     }
     finally {
@@ -418,8 +509,7 @@ Invoke-Check -Name 'Skill package whitelist' -Check {
     $skillRoot = Join-Path $repoRoot 'skill\deepseek-worker'
     $expected = @(
         'SKILL.md',
-        'agents\openai.yaml',
-        'assets\delegation-result.schema.json'
+        'agents\openai.yaml'
     )
     $actual = @(Get-ChildItem -LiteralPath $skillRoot -Recurse -File | ForEach-Object {
         $_.FullName.Substring($skillRoot.Length + 1)
@@ -541,8 +631,11 @@ Invoke-Check -Name 'Runner doctor is strict and installed-layout based' -Check {
         }
         if ([version]$doctor.powershell7_version -lt [version]'7.0') { throw 'Doctor accepted a PowerShell version below 7.0.' }
         if ([string]$doctor.powershell7_path -match '(?i)\\WindowsApps\\') { throw 'Doctor selected a Store/MSIX PowerShell path.' }
-        if ([int]$doctor.runner_contract_version -ne 3 -or [int]$doctor.result_schema_version -ne 2) {
-            throw 'Doctor did not report the installed v2 contracts.'
+        if ([int]$doctor.runner_contract_version -ne 4) {
+            throw 'Doctor did not report the installed v4 runner contract.'
+        }
+        if ($doctor.PSObject.Properties.Name -contains 'result_schema_version') {
+            throw 'Doctor still exposes the removed model-result schema.'
         }
 
         $env:CODEX_DEEPSEEK_PWSH_PATH = 'C:\Program Files\WindowsApps\pwsh.exe'
@@ -559,7 +652,9 @@ Invoke-Check -Name 'Runner doctor is strict and installed-layout based' -Check {
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -Force *> $null
         New-FakeCodexScript -Path $fakeCodex -Version '0.999.0'
         $unsupported = & $runner -Doctor | ConvertFrom-Json
-        if ($unsupported.cli_supported -or $unsupported.install_ok) { throw 'Doctor accepted an unsupported Codex CLI version.' }
+        if ($unsupported.cli_supported -or -not $unsupported.install_ok -or [string]::IsNullOrWhiteSpace([string]$unsupported.cli_version_warning)) {
+            throw 'Doctor did not report an unverified CLI version as a non-blocking warning.'
+        }
     }
     finally {
         Pop-WorkerTestEnvironment -Previous $previous
@@ -597,12 +692,24 @@ Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
     catch { $implementRejected = $true }
     if (-not $implementRejected) { throw 'Runner accepted implement with read-only.' }
 
-    $shortQuotaRejected = $false
-    try {
-        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode quota-first -Sandbox workspace-write -TimeoutSeconds 900 -DryRun *> $null
+    $quota = & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode quota-first -Sandbox workspace-write -TimeoutSeconds 900 -DryRun | ConvertFrom-Json
+    if ($quota.mode -ne 'quota-first' -or $quota.timeout_seconds -ne 900) {
+        throw 'Runner did not preserve the caller-selected quota-first timeout.'
     }
-    catch { $shortQuotaRejected = $true }
-    if (-not $shortQuotaRejected) { throw 'Runner accepted quota-first with a timeout below 1800 seconds.' }
+
+    $insideResultRejected = $false
+    try {
+        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode audit -ResultFile (Join-Path $repoRoot '.runner-envelope.json') -DryRun *> $null
+    }
+    catch { $insideResultRejected = $true }
+    if (-not $insideResultRejected) { throw 'Runner allowed ResultFile inside the coordinated worktree.' }
+
+    $insideRunRootRejected = $false
+    try {
+        & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $repoRoot -Prompt 'x' -Mode audit -RunRoot (Join-Path $repoRoot '.runner-artifacts') *> $null
+    }
+    catch { $insideRunRootRejected = $true }
+    if (-not $insideRunRootRejected) { throw 'Runner allowed RunRoot inside the coordinated worktree.' }
 }
 
 Invoke-Check -Name 'Runner workspace probe uses the real sandbox contract' -Check {
@@ -659,14 +766,10 @@ Invoke-Check -Name 'Runner workspace probe uses the real sandbox contract' -Chec
     }
 }
 
-Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' -Check {
+Invoke-Check -Name 'Runner treats model output as a non-authoritative summary' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-runner-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previous = Push-WorkerTestEnvironment -BasePath $tempBase
-    $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
-    $previousRuntimeCapture = $env:DSW_FAKE_RUNTIME_CAPTURE
-    $previousPromptCapture = $env:DSW_FAKE_PROMPT_CAPTURE
-    $previousGitMutation = $env:DSW_FAKE_GIT_MUTATION
     try {
         $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
         New-FakeCodexScript -Path $fakeCodex
@@ -684,17 +787,9 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         & git -C $workdir commit -q -m fixture
 
         $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
-        $resultPath = Join-Path $workdir 'published-result.json'
-        $env:DSW_FAKE_FINAL_KIND = 'invalid'
-        $invalidOutput = & $runner -Workdir $workdir -Prompt 'fake invalid' -Mode audit -ResultFile $resultPath 2>$null
-        $invalidExit = $LASTEXITCODE
-        $invalid = $invalidOutput | Select-Object -Last 1 | ConvertFrom-Json
-        if ($invalidExit -eq 0 -or $invalid.runner_state -ne 'failed' -or $invalid.final_schema_valid) {
-            throw 'Runner did not fail a malformed worker final.'
-        }
-        if (Test-Path -LiteralPath $resultPath) { throw 'Runner published ResultFile for an invalid final.' }
-
-        $env:DSW_FAKE_FINAL_KIND = 'valid'
+        $resultPath = Join-Path $tempBase 'free-form-result.json'
+        $env:DSW_FAKE_FINAL_KIND = 'free-form'
+        $env:DSW_FAKE_COMMAND_COUNT = '100'
         $runtimeCapturePath = Join-Path $tempBase 'runtime-capture.json'
         $promptCapturePath = Join-Path $tempBase 'prompt-capture.txt'
         $descendantPidPath = Join-Path $tempBase 'descendant.pid'
@@ -704,15 +799,22 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         $env:DSW_FAKE_DESCENDANT_PID = $descendantPidPath
         $env:DSW_FAKE_DESCENDANT_LATE_FILE = $descendantLatePath
         $pathBefore = $env:PATH
-        $validOutput = & $runner -Workdir $workdir -Prompt 'fake valid' -Mode audit -ResultFile $resultPath 2>$null
-        $validExit = $LASTEXITCODE
-        $valid = $validOutput | Select-Object -Last 1 | ConvertFrom-Json
-        if ($validExit -ne 0 -or $valid.runner_state -ne 'completed' -or -not $valid.final_schema_valid) {
-            throw 'Runner rejected a valid worker final.'
+        $freeFormOutput = & $runner -Workdir $workdir -Prompt 'fake free-form summary' -Mode implement -Sandbox workspace-write -ResultFile $resultPath 2>$null
+        $freeFormExit = $LASTEXITCODE
+        $freeForm = $freeFormOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($freeFormExit -ne 0 -or $freeForm.runner_state -ne 'completed' -or -not $freeForm.summary_present) {
+            throw 'Runner did not accept a free-form worker summary.'
         }
-        if ($valid.command_total -ne 1 -or $valid.command_failed -ne 0) { throw 'Runner command evidence counts are incorrect.' }
-        if ($valid.usage.uncached_input_tokens -ne 20) { throw 'Runner usage evidence is incorrect.' }
-        if (-not $valid.prompt_deleted) { throw 'Runner did not confirm prompt deletion.' }
+        if ($freeForm.command_total -ne 100 -or $freeForm.command_failed -ne 25) { throw 'Runner command evidence counts are incorrect.' }
+        if (-not $freeForm.commands_truncated) { throw 'Runner did not mark bounded command evidence as truncated.' }
+        $commandEvidence = Get-Content -LiteralPath (Join-Path $freeForm.artifact_path 'commands.json') -Raw | ConvertFrom-Json
+        if ($commandEvidence.total -ne 100 -or $commandEvidence.failed -ne 25 -or -not $commandEvidence.truncated) {
+            throw 'Bounded command artifact lost its aggregate facts.'
+        }
+        if (@($commandEvidence.commands).Count -gt 70) { throw 'Runner persisted an unbounded command evidence list.' }
+        if ($freeForm.usage.uncached_input_tokens -ne 20) { throw 'Runner usage evidence is incorrect.' }
+        if (-not $freeForm.prompt_deleted) { throw 'Runner did not confirm prompt deletion.' }
+        if (Test-Path -LiteralPath (Join-Path $freeForm.artifact_path 'child-arguments.json')) { throw 'Runner left child arguments behind.' }
         $descendantPid = [int](Get-Content -LiteralPath $descendantPidPath -Raw)
         Start-Sleep -Seconds 4
         if (Get-Process -Id $descendantPid -ErrorAction SilentlyContinue) { throw 'Runner left a descendant process alive after completion.' }
@@ -723,89 +825,142 @@ Invoke-Check -Name 'Runner validates final contract and emits bounded evidence' 
         if ([version]$runtimeCapture.version -lt [version]'7.0') { throw 'Fake Codex did not run under PowerShell 7.' }
         if ([System.IO.Path]::GetFullPath($runtimeCapture.path_first) -ne [System.IO.Path]::GetFullPath($runtimeCapture.pshome)) { throw 'PowerShell 7 directory was not first in the child PATH.' }
         if ($env:PATH -ne $pathBefore) { throw 'Runner did not restore the parent PATH.' }
-        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Runner did not atomically publish a valid ResultFile.' }
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw 'Runner did not publish its terminal ResultFile envelope.' }
+        $envelope = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        if ($envelope.runner_state -ne 'completed' -or [int]$envelope.runner_contract_version -ne 4) {
+            throw 'ResultFile is not the v4 Runner terminal envelope.'
+        }
+        $artifactStatus = Get-Content -LiteralPath (Join-Path $freeForm.artifact_path 'status.json') -Raw | ConvertFrom-Json
+        if ($envelope.run_id -ne $artifactStatus.run_id -or $envelope.runner_state -ne $artifactStatus.runner_state -or [int]$envelope.exit_code -ne [int]$artifactStatus.exit_code) {
+            throw 'ResultFile and status.json do not contain the same terminal envelope.'
+        }
+        foreach ($removedField in @('worker_claim', 'claimed_verification', 'final_schema_valid', 'final_parse_mode', 'publishable', 'result_schema_version')) {
+            if ($envelope.PSObject.Properties.Name -contains $removedField) {
+                throw "ResultFile still exposes removed model-authority field: $removedField"
+            }
+        }
+        if (Get-ChildItem -LiteralPath $tempBase -Filter 'free-form-result.json.*.tmp' -ErrorAction SilentlyContinue) {
+            throw 'Runner left a temporary ResultFile behind.'
+        }
         $capturedPrompt = Get-Content -LiteralPath $promptCapturePath -Raw
         if ($capturedPrompt -notmatch 'Do not stage, commit, push' -or $capturedPrompt -notmatch 'Do not hide a failing exit code') {
             throw 'Runner did not inject the Git ownership and exit-code rules.'
         }
+        if ($capturedPrompt -match 'strict JSON|output schema') {
+            throw 'Runner still asks the model to satisfy the removed result schema.'
+        }
+        Remove-Item Env:DSW_FAKE_DESCENDANT_PID -ErrorAction SilentlyContinue
+        Remove-Item Env:DSW_FAKE_DESCENDANT_LATE_FILE -ErrorAction SilentlyContinue
+        Remove-Item Env:DSW_FAKE_COMMAND_COUNT -ErrorAction SilentlyContinue
 
-        $env:DSW_FAKE_FINAL_KIND = 'prefix'
-        $prefixOutput = & $runner -Workdir $workdir -Prompt 'fake prefixed final' -Mode audit -ResultFile $resultPath 2>$null
-        $prefix = $prefixOutput | Select-Object -Last 1 | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $prefix.final_parse_mode -ne 'prefix_recovered' -or -not $prefix.final_schema_valid) {
-            throw 'Runner did not recover a single short prefix before valid JSON.'
-        }
-        Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json | Out-Null
-        if ((Get-Content -LiteralPath $resultPath -Raw).TrimStart().StartsWith('Brief')) {
-            throw 'Runner published wrapper prose instead of normalized JSON.'
-        }
-        $rawPrefixFinal = Get-Content -LiteralPath (Join-Path $prefix.artifact_path 'final.json') -Raw
-        if (-not $rawPrefixFinal.TrimStart().StartsWith('Brief')) {
-            throw 'Runner did not preserve the original prefixed final artifact.'
-        }
-
-        foreach ($fencedKind in @('fenced', 'fenced-prefix')) {
-            $env:DSW_FAKE_FINAL_KIND = $fencedKind
-            $fencedOutput = & $runner -Workdir $workdir -Prompt "fake $fencedKind final" -Mode audit -ResultFile $resultPath 2>$null
-            $fencedResult = $fencedOutput | Select-Object -Last 1 | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0 -or $fencedResult.final_parse_mode -ne 'markdown_fence_recovered' -or -not $fencedResult.final_schema_valid) {
-                throw "Runner did not recover a valid fenced final kind: $fencedKind"
+        foreach ($summaryKind in @('markdown', 'fenced', 'invalid', 'missing')) {
+            $caseResultPath = Join-Path $tempBase "$summaryKind-result.json"
+            $env:DSW_FAKE_FINAL_KIND = $summaryKind
+            $caseOutput = & $runner -Workdir $workdir -Prompt "fake $summaryKind summary" -Mode audit -ResultFile $caseResultPath 2>$null
+            $caseExit = $LASTEXITCODE
+            $case = $caseOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if ($caseExit -ne 0 -or $case.runner_state -ne 'completed') {
+                throw "Runner let summary formatting control execution success: $summaryKind"
             }
-            Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json | Out-Null
-        }
-
-        $partialResultPath = Join-Path $workdir 'partial-result.json'
-        $env:DSW_FAKE_FINAL_KIND = 'prefix-partial'
-        $partialOutput = & $runner -Workdir $workdir -Prompt 'fake prefixed partial' -Mode audit -ResultFile $partialResultPath 2>$null
-        $partial = $partialOutput | Select-Object -Last 1 | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $partial.runner_state -ne 'completed' -or $partial.worker_claim -ne 'partial' -or -not $partial.final_schema_valid -or $partial.final_parse_mode -ne 'prefix_recovered') {
-            throw 'Runner did not preserve a valid partial claim recovered from a short prefix.'
-        }
-        if (Test-Path -LiteralPath $partialResultPath) { throw 'Runner published a partial claim as a completed ResultFile.' }
-
-        $env:DSW_FAKE_FINAL_KIND = 'fenced-partial'
-        $fencedPartialOutput = & $runner -Workdir $workdir -Prompt 'fake fenced partial' -Mode audit -ResultFile $partialResultPath 2>$null
-        $fencedPartial = $fencedPartialOutput | Select-Object -Last 1 | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $fencedPartial.runner_state -ne 'completed' -or $fencedPartial.worker_claim -ne 'partial' -or -not $fencedPartial.final_schema_valid -or $fencedPartial.final_parse_mode -ne 'markdown_fence_recovered') {
-            throw 'Runner did not preserve a valid partial claim recovered from a Markdown fence.'
-        }
-        if (Test-Path -LiteralPath $partialResultPath) { throw 'Runner published a fenced partial claim as a completed ResultFile.' }
-
-        foreach ($invalidKind in @('multiple', 'json-prefix', 'duplicate-field', 'trailing', 'extra-field', 'non-string-array', 'oversized', 'fenced-trailing', 'fenced-multiple', 'non-json-fence')) {
-            $env:DSW_FAKE_FINAL_KIND = $invalidKind
-            $rejectedOutput = & $runner -Workdir $workdir -Prompt "fake $invalidKind" -Mode audit 2>$null
-            $rejected = $rejectedOutput | Select-Object -Last 1 | ConvertFrom-Json
-            if ($LASTEXITCODE -eq 0 -or $rejected.runner_state -ne 'failed' -or $rejected.final_schema_valid) {
-                throw "Runner accepted invalid final kind: $invalidKind"
+            if ($summaryKind -eq 'missing' -and $case.summary_present) {
+                throw 'Runner reported a missing summary as present.'
+            }
+            if ($summaryKind -ne 'missing' -and -not $case.summary_present) {
+                throw "Runner lost a present summary: $summaryKind"
+            }
+            $caseEnvelope = Get-Content -LiteralPath $caseResultPath -Raw | ConvertFrom-Json
+            if ($caseEnvelope.runner_state -ne 'completed') {
+                throw "Runner did not write a completed terminal envelope: $summaryKind"
             }
         }
 
-        [System.IO.File]::WriteAllText((Join-Path $workdir 'staged-baseline.txt'), 'staged baseline', [System.Text.UTF8Encoding]::new($false))
-        & git -C $workdir add staged-baseline.txt
-        $env:DSW_FAKE_FINAL_KIND = 'valid'
+        $env:DSW_FAKE_FINAL_KIND = 'oversized'
+        $oversizedOutput = & $runner -Workdir $workdir -Prompt 'fake oversized summary' -Mode audit 2>$null
+        $oversized = $oversizedOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $oversized.runner_state -ne 'completed' -or -not $oversized.summary_truncated) {
+            throw 'Runner did not bound an oversized summary without changing success.'
+        }
+
+        foreach ($eventsKind in @('empty', 'malformed')) {
+            $env:DSW_FAKE_FINAL_KIND = 'free-form'
+            $env:DSW_FAKE_EVENTS_KIND = $eventsKind
+            $eventsOutput = & $runner -Workdir $workdir -Prompt "fake $eventsKind events" -Mode audit 2>$null
+            $eventsResult = $eventsOutput | Select-Object -Last 1 | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $eventsResult.runner_state -ne 'completed' -or $eventsResult.evidence_complete) {
+                throw "Runner did not degrade unavailable event evidence without changing process success: $eventsKind"
+            }
+            if ($eventsKind -eq 'malformed' -and [int]$eventsResult.event_parse_errors -lt 1) {
+                throw 'Runner did not record malformed event evidence.'
+            }
+        }
+        Remove-Item Env:DSW_FAKE_EVENTS_KIND -ErrorAction SilentlyContinue
+
+        $env:DSW_FAKE_FINAL_KIND = 'nonzero'
+        $nonzeroResultPath = Join-Path $tempBase 'nonzero-result.json'
+        $nonzeroOutput = & $runner -Workdir $workdir -Prompt 'fake nonzero' -Mode audit -ResultFile $nonzeroResultPath 2>$null
+        $nonzeroExit = $LASTEXITCODE
+        $nonzero = $nonzeroOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($nonzeroExit -eq 0 -or $nonzero.runner_state -ne 'failed') {
+            throw 'Runner ignored the Worker process nonzero exit.'
+        }
+        if ((Get-Content -LiteralPath $nonzeroResultPath -Raw | ConvertFrom-Json).runner_state -ne 'failed') {
+            throw 'Runner did not write a failure terminal envelope.'
+        }
+
+        [System.IO.File]::WriteAllText((Join-Path $workdir 'overlap.txt'), "baseline`n", [System.Text.UTF8Encoding]::new($false))
+        & git -C $workdir add overlap.txt
+        & git -C $workdir commit -q -m overlap-fixture
+        Add-Content -LiteralPath (Join-Path $workdir 'overlap.txt') -Value 'user edit'
+        $env:DSW_FAKE_FINAL_KIND = 'free-form'
+        $env:DSW_FAKE_TOUCH_RELATIVE = 'overlap.txt'
+        $overlapOutput = & $runner -Workdir $workdir -Prompt 'continue a pre-existing dirty file' -Mode implement -Sandbox workspace-write 2>$null
+        $overlap = $overlapOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $overlap.runner_state -ne 'completed' -or (@($overlap.overlap_with_preexisting) -notcontains 'overlap.txt')) {
+            throw 'Runner treated a pre-existing dirty-file overlap as a hard failure.'
+        }
+        Remove-Item Env:DSW_FAKE_TOUCH_RELATIVE -ErrorAction SilentlyContinue
+
         $env:DSW_FAKE_GIT_MUTATION = 'worktree'
-        $unstagedOutput = & $runner -Workdir $workdir -Prompt 'fake unstaged mutation with staged baseline' -Mode implement -Sandbox workspace-write 2>$null
+        $unstagedOutput = & $runner -Workdir $workdir -Prompt 'fake untracked worktree mutation' -Mode implement -Sandbox workspace-write 2>$null
         $unstagedResult = $unstagedOutput | Select-Object -Last 1 | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $unstagedResult.runner_state -ne 'completed' -or $unstagedResult.git_index_changed) {
-            throw 'Runner falsely reported a change to a pre-existing staged baseline.'
+            throw 'Runner rejected an ordinary unstaged worktree change.'
         }
         Remove-Item -LiteralPath (Join-Path $workdir 'worker-index-change.txt') -Force
 
         $env:DSW_FAKE_GIT_MUTATION = 'index'
-        $indexOutput = & $runner -Workdir $workdir -Prompt 'fake index mutation' -Mode implement -Sandbox workspace-write 2>$null
+        $indexResultPath = Join-Path $tempBase 'index-result.json'
+        $indexOutput = & $runner -Workdir $workdir -Prompt 'fake index mutation' -Mode implement -Sandbox workspace-write -ResultFile $indexResultPath 2>$null
         $indexResult = $indexOutput | Select-Object -Last 1 | ConvertFrom-Json
         if ($LASTEXITCODE -eq 0 -or $indexResult.runner_state -ne 'failed' -or -not $indexResult.git_index_changed) {
             throw 'Runner did not reject a Worker change to the Git index.'
         }
+        if ((Get-Content -LiteralPath $indexResultPath -Raw | ConvertFrom-Json).runner_state -ne 'failed') {
+            throw 'Runner omitted the terminal envelope after an index violation.'
+        }
         & git -C $workdir reset -q HEAD
         Remove-Item -LiteralPath (Join-Path $workdir 'worker-index-change.txt') -Force
-        Remove-Item Env:DSW_FAKE_GIT_MUTATION -ErrorAction SilentlyContinue
+
+        $env:DSW_FAKE_GIT_MUTATION = 'head'
+        $headResultPath = Join-Path $tempBase 'head-result.json'
+        $headOutput = & $runner -Workdir $workdir -Prompt 'fake HEAD mutation' -Mode implement -Sandbox workspace-write -ResultFile $headResultPath 2>$null
+        $headResult = $headOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -eq 0 -or $headResult.runner_state -ne 'failed' -or $headResult.head_before -eq $headResult.head_after) {
+            throw 'Runner did not reject a Worker change to Git HEAD.'
+        }
+        if ((Get-Content -LiteralPath $headResultPath -Raw | ConvertFrom-Json).runner_state -ne 'failed') {
+            throw 'Runner omitted the terminal envelope after a HEAD violation.'
+        }
+
+        & git -C $workdir reset -q --hard HEAD~1
+        $env:DSW_FAKE_GIT_MUTATION = 'branch'
+        $branchOutput = & $runner -Workdir $workdir -Prompt 'fake branch mutation' -Mode implement -Sandbox workspace-write 2>$null
+        $branchResult = $branchOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -eq 0 -or $branchResult.runner_state -ne 'failed' -or $branchResult.branch -eq $branchResult.branch_after) {
+            throw 'Runner did not reject a checked-out branch change.'
+        }
     }
     finally {
-        if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
-        if ($null -eq $previousRuntimeCapture) { Remove-Item Env:DSW_FAKE_RUNTIME_CAPTURE -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_RUNTIME_CAPTURE = $previousRuntimeCapture }
-        if ($null -eq $previousPromptCapture) { Remove-Item Env:DSW_FAKE_PROMPT_CAPTURE -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_PROMPT_CAPTURE = $previousPromptCapture }
-        if ($null -eq $previousGitMutation) { Remove-Item Env:DSW_FAKE_GIT_MUTATION -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_GIT_MUTATION = $previousGitMutation }
         Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -823,6 +978,12 @@ Invoke-Check -Name 'Runner uses pinned shared-home profile' -Check {
     if ($runnerText -match 'Get-Command powershell\.exe' -or $runnerText -match 'Start-Process\s+-FilePath\s+[^\r\n]*powershell\.exe') {
         throw 'Runner still launches its child through Windows PowerShell 5.1.'
     }
+    if ($runnerText -match 'ConvertFrom-WorkerFinalText|Test-WorkerFinal|--output-schema|delegation-result\.schema\.json') {
+        throw 'Runner still contains the removed model-result parser or schema path.'
+    }
+    if ($runnerText -notmatch 'summary\.txt') {
+        throw 'Runner does not persist the non-authoritative natural-language summary.'
+    }
     if ($runnerText -notmatch 'Time budget: hard deadline' -or $runnerText -notmatch 'unverified_partial_changes') {
         throw 'Runner is missing the bounded quota-first finalization or partial-change contract.'
     }
@@ -839,7 +1000,6 @@ Invoke-Check -Name 'Runner preserves timeout state and partial evidence' -Check 
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-timeout-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previous = Push-WorkerTestEnvironment -BasePath $tempBase
-    $previousFakeKind = $env:DSW_FAKE_FINAL_KIND
     try {
         $fakeCodex = Join-Path $tempBase 'fake-codex.ps1'
         New-FakeCodexScript -Path $fakeCodex
@@ -858,14 +1018,18 @@ Invoke-Check -Name 'Runner preserves timeout state and partial evidence' -Check 
 
         $env:DSW_FAKE_FINAL_KIND = 'timeout'
         $runner = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek-exec.ps1'
-        $resultPath = Join-Path $workdir 'published-result.json'
+        $resultPath = Join-Path $tempBase 'published-result.json'
         $timeoutOutput = & $runner -Workdir $workdir -Prompt 'write then wait' -Mode implement -Sandbox workspace-write -TimeoutSeconds 1 -ResultFile $resultPath 2>$null
         $timeoutExit = $LASTEXITCODE
         $timeout = $timeoutOutput | Select-Object -Last 1 | ConvertFrom-Json
         if ($timeoutExit -ne 124 -or $timeout.runner_state -ne 'timed_out') { throw 'Runner did not preserve timed_out/124.' }
         if (-not $timeout.unverified_partial_changes) { throw 'Runner did not mark timed-out workspace changes as unverified.' }
-        if ($timeout.final_schema_valid -or (Test-Path -LiteralPath $resultPath)) {
-            throw 'Runner published or trusted a timed-out partial result.'
+        if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+            throw 'Runner did not write a terminal envelope for the timeout.'
+        }
+        $timeoutEnvelope = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        if ($timeoutEnvelope.runner_state -ne 'timed_out' -or $timeoutEnvelope.exit_code -ne 124) {
+            throw 'Timeout ResultFile did not preserve the Runner timed_out/124 facts.'
         }
         if (-not $timeout.prompt_deleted) { throw 'Runner did not remove the prompt after timeout.' }
         $status = Get-Content -LiteralPath (Join-Path $timeout.artifact_path 'status.json') -Raw | ConvertFrom-Json
@@ -875,7 +1039,6 @@ Invoke-Check -Name 'Runner preserves timeout state and partial evidence' -Check 
         if (@($status.changed_files) -notcontains 'worker-中文-partial.txt') { throw 'Timeout evidence omitted the untracked partial file.' }
     }
     finally {
-        if ($null -eq $previousFakeKind) { Remove-Item Env:DSW_FAKE_FINAL_KIND -ErrorAction SilentlyContinue } else { $env:DSW_FAKE_FINAL_KIND = $previousFakeKind }
         Pop-WorkerTestEnvironment -Previous $previous
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
     }

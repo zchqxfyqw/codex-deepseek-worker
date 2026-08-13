@@ -5,8 +5,8 @@ Thanks for helping improve the DeepSeek Worker. This project is a public candida
 ## Ground rules
 
 - Do not commit personal usernames, absolute local paths, API keys, tokens, logs, run artifacts, session data, or other user content.
-- Keep the skill package lean: `skill/deepseek-worker` contains only `SKILL.md`, `agents/openai.yaml`, and `assets/delegation-result.schema.json`. User-facing docs live in the repository root or `docs/`.
-- Preserve the runner invariants: default read-only/no-network/ephemeral, audit/implement/quota-first, Git before/after attribution, same-worktree locking, PID+start-time identity, 45-minute timeout with process-tree termination, no automatic retries, no silent model/provider fallback, structured final output, and compact evidence bundling.
+- Keep the skill package lean: `skill/deepseek-worker` contains only `SKILL.md` and `agents/openai.yaml`. User-facing docs live in the repository root or `docs/`.
+- Preserve the runner invariants: default read-only/no-network/ephemeral, audit/implement/quota-first, Git before/after attribution, same-worktree locking, PID+start-time identity, 45-minute timeout with process-tree termination, no automatic retries, no silent model/provider fallback, Runner-authoritative terminal envelopes, and compact evidence bundling.
 - Do not add network calls to the installer or CI. CI must be offline static checks without API keys.
 
 ## Development workflow
@@ -25,7 +25,7 @@ pwsh ./tests/run-tests.ps1
 ## Review checklist
 
 - PowerShell scripts parse without errors.
-- JSON and YAML assets parse and satisfy schema/frontmatter checks.
+- JSON and YAML assets parse, and Skill frontmatter remains valid.
 - No forbidden path or secret patterns appear in tracked text files.
 - Installer dry-run does not create files or directories.
 - CI pins external GitHub Actions to full commit SHAs and does not reference secrets.

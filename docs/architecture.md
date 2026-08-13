@@ -2,21 +2,21 @@
 
 ## Components
 
-`codex-deepseek-exec.ps1` is the runner. It validates the workdir, resolves physical paths, checks Git state, acquires a per-worktree coordination lock, starts a child Codex CLI process, waits with a hard timeout, and writes run artifacts plus a compact final result.
+`codex-deepseek-exec.ps1` is the runner. It validates the workdir, resolves physical paths, checks Git state, acquires a per-worktree coordination lock, starts a child Codex CLI process, waits with a hard timeout, and writes run artifacts plus a Runner-generated terminal envelope.
 
 `codex-deepseek.ps1` is the launcher invoked by the runner's child process. It selects the dedicated `deepseek-worker` profile and pins `deepseek-v4-flash`, the provider, approval policy, disabled features, telemetry settings, and MCP disables at CLI priority. It reads the API key from a file and exposes it to the child only through `DEEPSEEK_API_KEY`.
 
-The skill at `skill/deepseek-worker` gives the main Codex agent the invocation contract and the output schema. The installed model catalog and full provider definition live in `$CODEX_HOME\deepseek-worker.config.toml`; the launcher pins the profile and all critical runtime choices so project configuration cannot silently select another model or provider.
+The skill at `skill/deepseek-worker` gives the main Codex agent a concise invocation and review contract. The installed model catalog and full provider definition live in `$CODEX_HOME\deepseek-worker.config.toml`; the launcher pins the profile and all critical runtime choices so project configuration cannot silently select another model or provider.
 
 ## Run Flow
 
 1. The caller invokes the runner with a workdir, prompt, mode, sandbox, and optional result file.
 2. The runner resolves the physical workdir and Git root, and snapshots Git state before the run.
-3. It acquires a named mutex for the coordination root and registers a live worker using PID plus process start time.
-4. It writes the prompt to a temporary stdin file, launches the child Codex CLI through the launcher, and updates the registration to the child process identity.
-5. The child runs with the output schema, writes its final JSON message, and emits JSONL events.
-6. On completion, timeout, or failure, the runner cleans up the prompt file and registration, snapshots Git state again, and writes diff/command evidence.
-7. It validates the final JSON contract, copies the final message to `-ResultFile` only for a valid completed result, and returns a compact JSON bundle.
+3. It acquires a named mutex for the coordination root and registers the parent Runner using PID plus process start time; that registration remains live through terminal evidence collection.
+4. It writes the prompt to a temporary stdin file and launches the child Codex CLI through the launcher.
+5. The child writes a concise natural-language final message to `summary.txt` and emits JSONL events. The summary may be plain text or Markdown and does not determine success.
+6. On completion, timeout, or failure, the runner cleans up temporary prompt/argument files, snapshots Git state again, and writes bounded change/command evidence.
+7. Runner-observed process exit, timeout, cleanup, and Git hard boundaries determine the terminal state. Command evidence supports task acceptance without independently rewriting that state. After evidence collection it removes its coordination registration, then atomically writes the same terminal envelope to `status.json` and, when requested, to an external `-ResultFile`.
 
 ## Run Artifacts
 
@@ -24,17 +24,15 @@ Artifacts are external to the worktree, under `%LOCALAPPDATA%\CodexDeepSeekWorke
 
 | File | Content |
 | --- | --- |
-| `invocation.json` | Run metadata, including prompt length and SHA-256, not the prompt body |
-| `status.json` | Runner state, process identity, Git before/after, changed files |
-| `final.json` | The worker's structured final message |
-| `events.jsonl` | Codex CLI JSONL events |
-| `commands.json` | Extracted command evidence from events |
-| `before-status.txt` / `after-status.txt` | Git status snapshots |
-| `changed-files.txt` | Changed file list |
-| `diff-stat.txt` / `diff.patch` | Diff summary and patch |
-| `stderr.log` | Child stderr |
+| `status.json` | Authoritative Runner terminal envelope: state, process/Git facts, evidence completeness, warnings, and artifact paths |
+| `summary.txt` | Non-authoritative Worker summary in plain text or Markdown |
+| `events.jsonl` | Diagnostic Codex CLI JSONL event stream; not part of the default review set |
+| `commands.json` | Bounded command evidence extracted from events |
+| `changed-files.txt` | Files attributed to or observed during this run |
+| `diff-stat.txt` | Compact diff summary for the observed files |
+| `stderr.log` | Diagnostic child stderr |
 
-The prompt stdin file is deleted after the run. The prompt body is not written into invocation or status artifacts.
+The temporary prompt and child-argument files are deleted after the run. The prompt body is not written into status or diagnostic artifacts. A malformed, fenced, or missing summary can produce a warning but cannot turn an otherwise successful process into a failed run. Likewise, overlap with a pre-existing dirty file is recorded for targeted review rather than treated as an automatic execution failure; changed HEAD or index remains a hard boundary.
 
 ## Coordination
 

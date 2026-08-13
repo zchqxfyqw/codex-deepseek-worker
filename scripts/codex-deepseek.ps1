@@ -101,7 +101,8 @@ end {
         $codexVersion = if ($versionText -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
     }
     if ($supportedCliVersions.Count -gt 0 -and $supportedCliVersions -notcontains $codexVersion) {
-        throw "Codex CLI $codexVersion is not supported by this DeepSeek Worker release. Supported: $($supportedCliVersions -join ', '). Set CODEX_DEEPSEEK_CODEX_PATH to a verified CLI."
+        $reportedVersion = if ([string]::IsNullOrWhiteSpace($codexVersion)) { '<unparsed>' } else { $codexVersion }
+        Write-Warning "Codex CLI $reportedVersion is outside the verified matrix ($($supportedCliVersions -join ', ')). Run the Worker -WorkspaceProbe after CLI upgrades."
     }
 
     for ($index = 0; $index -lt $CodexArguments.Count; $index++) {
