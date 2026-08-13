@@ -326,7 +326,7 @@ function Test-PathWithinBoundary {
 }
 
 function Get-Sha256Text {
-    param([Parameter(Mandatory = $true)][string]$Text)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
 
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {

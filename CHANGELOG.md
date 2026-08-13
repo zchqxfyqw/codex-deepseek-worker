@@ -23,6 +23,7 @@ All notable changes to this project are documented in this file. The format is b
 - Keep the per-worktree registration through terminal evidence collection, capture child identity before Job assignment, and guarantee Job disposal even when termination reports an error.
 - Run the workspace write probe entirely inside the Codex sandbox with one root-level temporary file, avoiding a false access denial caused by a helper directory created before sandbox startup.
 - Use Codex's elevated Windows workspace sandbox and make the write probe fail on its first filesystem error, instead of allowing the restricted unelevated token to retry writes that cannot succeed.
+- Accept a clean Git repository with an empty index when capturing the baseline hash.
 - Preserve packaged source identity during ZIP installs, transactionally retire the old result Schema, and keep API keys and historical runs untouched during upgrades.
 
 ## [0.2.4-rc1] - 2026-08-12

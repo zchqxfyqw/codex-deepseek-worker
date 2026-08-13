@@ -687,6 +687,20 @@ Invoke-Check -Name 'Runner dry-run' -Check {
     if ([version]$dry.powershell7_version -lt [version]'7.0' -or [string]$dry.powershell7_path -match '(?i)\\WindowsApps\\') {
         throw 'Dry-run did not select a non-Store PowerShell 7 runtime.'
     }
+
+    $emptyRepo = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-empty-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $emptyRepo | Out-Null
+    try {
+        & git -C $emptyRepo init -q
+        & git -C $emptyRepo config user.email 'offline-test@example.invalid'
+        & git -C $emptyRepo config user.name 'Offline Test'
+        & git -C $emptyRepo commit --allow-empty -q -m fixture
+        $emptyDry = & (Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1') -Workdir $emptyRepo -Prompt 'x' -Mode audit -DryRun | ConvertFrom-Json
+        if (-not $emptyDry.dry_run) { throw 'Runner rejected a clean repository with an empty index.' }
+    }
+    finally {
+        Remove-Item -LiteralPath $emptyRepo -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Invoke-Check -Name 'Runner rejects mode and sandbox mismatches' -Check {
