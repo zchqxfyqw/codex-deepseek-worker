@@ -38,6 +38,10 @@ try {
     foreach ($relativePath in $trackedFiles) {
         if ($relativePath -like 'dist/*') { continue }
         $source = Join-Path $repoRoot $relativePath
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            if ($AllowDirty) { continue }
+            throw "Tracked release file is missing: $relativePath"
+        }
         $destination = Join-Path $stageRoot $relativePath
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath $source -Destination $destination

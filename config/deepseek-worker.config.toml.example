@@ -25,7 +25,7 @@ env_key = "DEEPSEEK_API_KEY"
 network_access = false
 
 [windows]
-sandbox = "unelevated"
+sandbox = "elevated"
 
 [analytics]
 enabled = false

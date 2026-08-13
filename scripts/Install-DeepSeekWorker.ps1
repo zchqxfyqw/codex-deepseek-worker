@@ -58,13 +58,16 @@ $modelCatalogPath = Join-Path $installRoot 'models.json'
 $profilePath = Join-Path $codexHome 'deepseek-worker.config.toml'
 $skillDest = Join-Path $codexHome 'skills\deepseek-worker'
 $installedManifestPath = Join-Path $installRoot 'installed-manifest.json'
+$obsoleteDestinations = @(
+    (Join-Path $installRoot 'assets\delegation-result.schema.json'),
+    (Join-Path $skillDest 'assets\delegation-result.schema.json')
+)
 
 $fileSpecs = @(
     @{ Source = Join-Path $repoRoot 'scripts\codex-deepseek.ps1'; Destination = Join-Path $installRoot 'codex-deepseek.ps1' },
     @{ Source = Join-Path $repoRoot 'scripts\codex-deepseek-exec.ps1'; Destination = Join-Path $installRoot 'codex-deepseek-exec.ps1' },
     @{ Source = Join-Path $repoRoot 'scripts\Set-DeepSeekKey.ps1'; Destination = Join-Path $installRoot 'Set-DeepSeekKey.ps1' },
     @{ Source = Join-Path $repoRoot 'scripts\Uninstall-DeepSeekWorker.ps1'; Destination = Join-Path $installRoot 'Uninstall-DeepSeekWorker.ps1' },
-    @{ Source = Join-Path $repoRoot 'skill\deepseek-worker\assets\delegation-result.schema.json'; Destination = Join-Path $installRoot 'assets\delegation-result.schema.json' },
     @{ Source = Join-Path $repoRoot 'config\deepseek-v4-flash.models.json.example'; Destination = $modelCatalogPath },
     @{ Source = $releaseManifestSource; Destination = Join-Path $installRoot 'release-manifest.json' }
 )
@@ -79,24 +82,34 @@ foreach ($spec in $fileSpecs) {
 if (-not (Test-Path -LiteralPath $profileTemplate -PathType Leaf)) { throw "Profile template not found: $profileTemplate" }
 if (-not (Test-Path -LiteralPath $skillSource -PathType Container)) { throw "Skill source not found: $skillSource" }
 
-$managedDestinations = @($fileSpecs.Destination + $profilePath + $skillDest + $installedManifestPath)
+$managedDestinations = @($fileSpecs.Destination + $profilePath + $skillDest + $installedManifestPath + $obsoleteDestinations)
 $existing = @($managedDestinations | Where-Object { Test-Path -LiteralPath $_ })
 if ($existing.Count -gt 0 -and -not $Force) {
     throw "DeepSeek Worker managed files already exist. Re-run with -Force for a backed-up transactional upgrade. First existing path: $($existing[0])"
 }
 
 $sourceCommit = $null
-try {
-    $candidateOutput = @(& git -C $repoRoot rev-parse HEAD 2>$null)
-    $gitExitCode = $LASTEXITCODE
-    $candidateCommit = $candidateOutput | Select-Object -First 1
-    if ($gitExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($candidateCommit)) {
-        $sourceCommit = ([string]$candidateCommit).Trim()
-    }
+if ([string]::IsNullOrWhiteSpace($sourceCommit) -and -not [string]::IsNullOrWhiteSpace([string]$releaseManifest.source_commit)) {
+    $sourceCommit = ([string]$releaseManifest.source_commit).Trim()
 }
-catch { $sourceCommit = $null }
+if ([string]::IsNullOrWhiteSpace($sourceCommit)) {
+    try {
+        $topLevel = @(& git -C $repoRoot rev-parse --show-toplevel 2>$null) | Select-Object -First 1
+        if ($LASTEXITCODE -eq 0 -and
+            [System.IO.Path]::GetFullPath(([string]$topLevel).Trim()).TrimEnd('\') -eq [System.IO.Path]::GetFullPath($repoRoot).TrimEnd('\')) {
+            $sourceCommit = ([string](@(& git -C $repoRoot rev-parse HEAD 2>$null) | Select-Object -First 1)).Trim()
+        }
+    }
+    catch { $sourceCommit = $null }
+}
 if ([string]::IsNullOrWhiteSpace($sourceCommit) -and -not [string]::IsNullOrWhiteSpace($env:CODEX_DEEPSEEK_SOURCE_COMMIT)) {
     $sourceCommit = $env:CODEX_DEEPSEEK_SOURCE_COMMIT.Trim()
+}
+if (-not [string]::IsNullOrWhiteSpace($sourceCommit)) {
+    $sourceCommit = $sourceCommit.ToLowerInvariant()
+    if ($sourceCommit -notmatch '\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z') {
+        throw 'Source commit must be a complete 40- or 64-character hexadecimal object ID.'
+    }
 }
 
 $action = if ($existing.Count -gt 0) { 'Upgrade with backup and rollback' } else { 'Install transactionally' }
@@ -162,6 +175,12 @@ try {
     if (Test-Path -LiteralPath $skillDest) { Remove-Item -LiteralPath $skillDest -Recurse -Force }
     Move-Item -LiteralPath $temporarySkill -Destination $skillDest
 
+    foreach ($obsoleteDestination in $obsoleteDestinations) {
+        if (Test-Path -LiteralPath $obsoleteDestination) {
+            Remove-Item -LiteralPath $obsoleteDestination -Recurse -Force
+        }
+    }
+
     $installedFiles = New-Object System.Collections.Generic.List[object]
     foreach ($staged in $stagedSpecs) {
         $installedFiles.Add([ordered]@{ path = $staged.Destination; sha256 = Get-Sha256 -Path $staged.Destination })
@@ -175,7 +194,6 @@ try {
         product_version = $releaseManifest.product_version
         source_commit = $sourceCommit
         runner_contract_version = $releaseManifest.runner_contract_version
-        result_schema_version = $releaseManifest.result_schema_version
         adapter_id = $releaseManifest.adapter_id
         adapter_version = $releaseManifest.adapter_version
         provider = $releaseManifest.provider

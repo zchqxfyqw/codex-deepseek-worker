@@ -8,7 +8,7 @@
 
 - [ ] All offline tests pass
 - [ ] No personal paths, secrets, logs, run artifacts, or user content added
-- [ ] Skill package still contains only `SKILL.md`, `agents/openai.yaml`, and `assets/`
+- [ ] Skill package still contains only `SKILL.md` and `agents/openai.yaml`
 - [ ] Changelog updated when behavior changed
 
 ## Risks or follow-ups
