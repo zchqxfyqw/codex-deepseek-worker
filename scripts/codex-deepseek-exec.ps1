@@ -877,11 +877,7 @@ if ($Doctor) {
 
 $workspaceProbeToken = $null
 $workspaceProbeRelativePath = $null
-$workspaceProbeScriptRelativePath = $null
-$workspaceProbeScriptPath = $null
-$workspaceProbeScriptText = $null
-$workspaceProbeDirectoryPath = $null
-$workspaceProbeDirectoryExisted = $false
+$workspaceProbePath = $null
 if ($WorkspaceProbe) {
     if ([string]::IsNullOrWhiteSpace($Workdir)) { throw '-WorkspaceProbe requires an explicit -Workdir.' }
     if (-not [string]::IsNullOrWhiteSpace($Prompt) -or -not [string]::IsNullOrWhiteSpace($PromptFile) -or -not [string]::IsNullOrWhiteSpace($ResultFile)) {
@@ -890,17 +886,9 @@ if ($WorkspaceProbe) {
     if ($AllowNetwork) { throw '-WorkspaceProbe never enables network access.' }
     $probeId = [Guid]::NewGuid().ToString('N')
     $workspaceProbeToken = "DSW_WORKSPACE_PROBE_OK_$probeId"
-    $workspaceProbeRelativePath = ".codex_tmp/deepseek-worker-probe-$probeId.txt"
-    $workspaceProbeScriptRelativePath = ".codex_tmp/deepseek-worker-probe-$probeId.ps1"
-    $workspaceProbeScriptText = @"
-`$ErrorActionPreference = 'Stop'
-`$target = Join-Path `$PSScriptRoot 'deepseek-worker-probe-$probeId.txt'
-[IO.File]::WriteAllText(`$target, '$workspaceProbeToken', [Text.UTF8Encoding]::new(`$false))
-if ([IO.File]::ReadAllText(`$target) -ne '$workspaceProbeToken') { throw 'probe readback mismatch' }
-[IO.File]::Delete(`$target)
-Write-Output '$workspaceProbeToken'
-"@
-    $Prompt = "Workspace permission probe only. Do not inspect unrelated files. Run exactly one PowerShell 7 command and no other tool command: & (Join-Path (Get-Location) '$workspaceProbeScriptRelativePath'). The script tests $workspaceProbeRelativePath and must output $workspaceProbeToken. Then return a concise summary."
+    $workspaceProbeRelativePath = ".deepseek-worker-probe-$probeId.txt"
+    $workspaceProbeCommand = "& { `$t = Join-Path (Get-Location) '$workspaceProbeRelativePath'; try { [IO.File]::WriteAllText(`$t, '$workspaceProbeToken', [Text.UTF8Encoding]::new(`$false)); if ([IO.File]::ReadAllText(`$t) -ne '$workspaceProbeToken') { throw 'probe readback mismatch' }; Write-Output '$workspaceProbeToken' } finally { if ([IO.File]::Exists(`$t)) { [IO.File]::Delete(`$t) } } }"
+    $Prompt = "Workspace permission probe only. Do not inspect unrelated files. Run exactly this one PowerShell 7 command verbatim and no other tool command: $workspaceProbeCommand Then return a concise summary."
     $Mode = 'implement'
     $Sandbox = 'workspace-write'
     $TimeoutSeconds = 300
@@ -922,6 +910,9 @@ if ([string]::IsNullOrWhiteSpace($Workdir)) {
 $resolvedWorkdir = Get-PhysicalExistingPath -Path (Resolve-Path -LiteralPath $Workdir -ErrorAction Stop).Path
 if (-not (Test-Path -LiteralPath $resolvedWorkdir -PathType Container)) {
     throw "Workdir is not a directory: $resolvedWorkdir"
+}
+if ($WorkspaceProbe) {
+    $workspaceProbePath = [System.IO.Path]::GetFullPath((Join-Path $resolvedWorkdir $workspaceProbeRelativePath))
 }
 
 if (-not [string]::IsNullOrWhiteSpace($PromptFile)) {
@@ -1165,14 +1156,6 @@ try {
         $guard.ReleaseMutex()
     }
 
-    if ($WorkspaceProbe) {
-        $workspaceProbeScriptPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedWorkdir $workspaceProbeScriptRelativePath))
-        $workspaceProbeDirectoryPath = Split-Path -Parent $workspaceProbeScriptPath
-        $workspaceProbeDirectoryExisted = Test-Path -LiteralPath $workspaceProbeDirectoryPath -PathType Container
-        New-Item -ItemType Directory -Path $workspaceProbeDirectoryPath -Force | Out-Null
-        Write-Utf8Text -Path $workspaceProbeScriptPath -Text $workspaceProbeScriptText
-    }
-
     $modeInstruction = switch ($Mode) {
         'audit' { 'Mode: audit. Inspect and reason within the stated scope. Do not modify files.' }
         'implement' { 'Mode: implement. Complete the bounded change and its relevant verification within the granted sandbox.' }
@@ -1301,25 +1284,12 @@ finally {
         $workerJob = $null
     }
     Remove-Item -LiteralPath $jobReadyPath -Force -ErrorAction SilentlyContinue
-    if ($null -ne $workspaceProbeScriptPath -and (Test-Path -LiteralPath $workspaceProbeScriptPath -PathType Leaf)) {
-        try { [System.IO.File]::Delete($workspaceProbeScriptPath) }
+    if ($null -ne $workspaceProbePath -and (Test-Path -LiteralPath $workspaceProbePath -PathType Leaf)) {
+        try { [System.IO.File]::Delete($workspaceProbePath) }
         catch {
             $runnerState = 'failed'
             if ($exitCode -eq 0) { $exitCode = 1 }
-            $cleanupMessage = "Workspace probe helper cleanup failed: $workspaceProbeScriptPath"
-            $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $cleanupMessage } else { "$caughtError; $cleanupMessage" }
-        }
-    }
-    if ($WorkspaceProbe -and -not $workspaceProbeDirectoryExisted -and $null -ne $workspaceProbeDirectoryPath -and (Test-Path -LiteralPath $workspaceProbeDirectoryPath -PathType Container)) {
-        try {
-            if (@(Get-ChildItem -LiteralPath $workspaceProbeDirectoryPath -Force).Count -eq 0) {
-                [System.IO.Directory]::Delete($workspaceProbeDirectoryPath)
-            }
-        }
-        catch {
-            $runnerState = 'failed'
-            if ($exitCode -eq 0) { $exitCode = 1 }
-            $cleanupMessage = "Workspace probe directory cleanup failed: $workspaceProbeDirectoryPath"
+            $cleanupMessage = "Workspace probe file cleanup failed: $workspaceProbePath"
             $caughtError = if ([string]::IsNullOrWhiteSpace($caughtError)) { $cleanupMessage } else { "$caughtError; $cleanupMessage" }
         }
     }
@@ -1533,15 +1503,13 @@ if ($overlap.Count -gt 0) {
 
 $workspaceProbeOk = $null
 if ($WorkspaceProbe) {
-    $probeAbsolutePath = [System.IO.Path]::GetFullPath((Join-Path $resolvedWorkdir $workspaceProbeRelativePath))
     $probeCommandSucceeded = @($probeCommands | Where-Object {
         $_.exit_code -eq 0 -and
         ([string]$_.output).Contains($workspaceProbeToken)
     }).Count -gt 0
     $workspaceProbeOk = [bool](
         $probeCommandSucceeded -and
-        -not (Test-Path -LiteralPath $probeAbsolutePath) -and
-        -not (Test-Path -LiteralPath $workspaceProbeScriptPath) -and
+        -not (Test-Path -LiteralPath $workspaceProbePath) -and
         $newlyChanged.Count -eq 0 -and
         $overlap.Count -eq 0 -and
         -not $gitIndexChanged)

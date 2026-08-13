@@ -53,7 +53,8 @@ function Push-WorkerTestEnvironment {
         'DSW_FAKE_GIT_MUTATION',
         'DSW_FAKE_TOUCH_RELATIVE',
         'DSW_FAKE_COMMAND_COUNT',
-        'DSW_FAKE_EVENTS_KIND'
+        'DSW_FAKE_EVENTS_KIND',
+        'DSW_FAKE_PROBE_REQUIRE_ABSENT'
     )
     foreach ($name in $names) {
         $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -104,19 +105,22 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_PROMPT_CAPTURE)) {
 $workdirIndex = [Array]::IndexOf([string[]]$Rest, '-C')
 $workdir = if ($workdirIndex -ge 0 -and $workdirIndex + 1 -lt $Rest.Count) { $Rest[$workdirIndex + 1] } else { $null }
 $probeTokenMatch = [regex]::Match($stdinPrompt, 'DSW_WORKSPACE_PROBE_OK_[0-9a-f]+')
-$probePathMatch = [regex]::Match($stdinPrompt, '\.codex_tmp/deepseek-worker-probe-[0-9a-f]+\.txt')
+$probePathMatch = [regex]::Match($stdinPrompt, '\.deepseek-worker-probe-[0-9a-f]+\.txt')
 if ($probeTokenMatch.Success -and $probePathMatch.Success -and -not [string]::IsNullOrWhiteSpace($workdir)) {
     $probeToken = $probeTokenMatch.Value
     $probeRelativePath = $probePathMatch.Value
+    $probePath = Join-Path $workdir $probeRelativePath
     $probeExitCode = 0
     $probeOutput = $probeToken
-    if ($env:DSW_FAKE_WORKSPACE_PROBE_FAIL -eq '1') {
+    if ($env:DSW_FAKE_PROBE_REQUIRE_ABSENT -eq '1' -and (Test-Path -LiteralPath $probePath)) {
+        $probeExitCode = 1
+        $probeOutput = 'Runner pre-created the probe file outside the sandbox.'
+    }
+    elseif ($env:DSW_FAKE_WORKSPACE_PROBE_FAIL -eq '1') {
         $probeExitCode = 1
         $probeOutput = 'Access denied'
     }
     else {
-        $probePath = Join-Path $workdir $probeRelativePath
-        New-Item -ItemType Directory -Path (Split-Path -Parent $probePath) -Force | Out-Null
         [System.IO.File]::WriteAllText($probePath, $probeToken, [System.Text.UTF8Encoding]::new($false))
         if ([System.IO.File]::ReadAllText($probePath) -ne $probeToken) { throw 'Fake probe readback mismatch.' }
         Remove-Item -LiteralPath $probePath -Force
@@ -739,18 +743,31 @@ Invoke-Check -Name 'Runner workspace probe uses the real sandbox contract' -Chec
         }
 
         $env:DSW_FAKE_FINAL_KIND = 'invalid'
+        $env:DSW_FAKE_PROBE_REQUIRE_ABSENT = '1'
         $probeOutput = & $runner -Workdir $workdir -WorkspaceProbe 2>$null
         $probeExit = $LASTEXITCODE
         $probe = $probeOutput | Select-Object -Last 1 | ConvertFrom-Json
         if ($probeExit -ne 0 -or $probe.runner_state -ne 'completed' -or -not $probe.workspace_probe_ok) {
-            throw 'Workspace probe did not accept a successful create/read/delete round trip.'
+            $probeEvents = Get-Content -LiteralPath $probe.events_path -Raw
+            throw "Workspace probe did not accept a successful create/read/delete round trip: $($probe | ConvertTo-Json -Depth 5 -Compress); events=$probeEvents"
         }
-        if (Get-ChildItem -LiteralPath (Join-Path $workdir '.codex_tmp') -Filter 'deepseek-worker-probe-*' -ErrorAction SilentlyContinue) {
+        if (Get-ChildItem -LiteralPath $workdir -Filter '.deepseek-worker-probe-*' -ErrorAction SilentlyContinue) {
             throw 'Workspace probe left its temporary file behind.'
         }
-        if (Test-Path -LiteralPath (Join-Path $workdir '.codex_tmp')) {
-            throw 'Workspace probe left its newly-created temporary directory behind.'
+        Remove-Item Env:DSW_FAKE_PROBE_REQUIRE_ABSENT -ErrorAction SilentlyContinue
+
+        $existingProbeDirectory = Join-Path $workdir '.codex_tmp'
+        New-Item -ItemType Directory -Path $existingProbeDirectory | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $existingProbeDirectory 'keep.txt'), 'keep')
+        $existingOutput = & $runner -Workdir $workdir -WorkspaceProbe 2>$null
+        $existing = $existingOutput | Select-Object -Last 1 | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $existing.runner_state -ne 'completed' -or -not $existing.workspace_probe_ok) {
+            throw 'Workspace probe failed when its temporary directory already existed.'
         }
+        if (-not (Test-Path -LiteralPath (Join-Path $existingProbeDirectory 'keep.txt') -PathType Leaf)) {
+            throw 'Workspace probe removed an unrelated pre-existing temporary directory.'
+        }
+        Remove-Item -LiteralPath $existingProbeDirectory -Recurse -Force
 
         $env:DSW_FAKE_WORKSPACE_PROBE_FAIL = '1'
         $failedOutput = & $runner -Workdir $workdir -WorkspaceProbe 2>$null
