@@ -5,7 +5,7 @@ description: Explicitly delegate a bounded coding, analysis, review, or implemen
 
 # DeepSeek Worker
 
-Resolve PowerShell 7 from `CODEX_DEEPSEEK_PWSH_PATH` or `C:\Program Files\PowerShell\7\pwsh.exe`, then invoke the installed `codex-deepseek-exec.ps1` with `pwsh -NoLogo -NoProfile -File` and an explicit worktree. Never use a `WindowsApps` alias, Windows PowerShell 5.1, or a silent CLI/model/provider substitute.
+Resolve PowerShell 7 from `CODEX_DEEPSEEK_PWSH_PATH` or `C:\Program Files\PowerShell\7\pwsh.exe`, then invoke exactly `$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1` with `pwsh -NoLogo -NoProfile -File` and an explicit worktree. Never resolve the Runner from `PATH` or `%APPDATA%\npm`, use a `WindowsApps` alias or Windows PowerShell 5.1, or silently substitute another CLI, model, or provider.
 
 - Give the Worker a task-local objective, allowed scope, material constraints, and acceptance checks. Preserve the user's intent and leave implementation choices to the Worker.
 - Choose `audit`, `implement`, or `quota-first` from task risk. In `quota-first`, dispatch once and let the Worker own relevant discovery, edits, tests, correction, and self-review within scope.

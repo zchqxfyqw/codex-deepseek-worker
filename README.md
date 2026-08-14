@@ -14,15 +14,17 @@ Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI
 $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自行检索、实现、测试、纠错和自审；主 Codex 只验收紧凑证据。范围：……；验收：……。
 ```
 
-### v0.3.0-rc1 候选版更新摘要
+### v0.3.1-rc1 候选版更新摘要
 
+- Skill 现在固定调用安装目录中的当前 Runner，不再从 `PATH` 或旧 `%APPDATA%\npm` 入口解析。
+- `-Force` 升级只会识别并备份本项目旧 Runner，再把它替换成转发到当前 Runner 的兼容入口；不认识的用户脚本保持原样。
 - 保留 `$deepseek-worker` 与 `audit`、`implement`、`quota-first` 的原有用法，删去模型端结构化 JSON 契约。
 - 运行结果只由 Runner 可观测事实判定；`summary.txt` 可以是普通文本或 Markdown，不参与成功/失败判定。
 - `-ResultFile` 对成功、失败和超时都写入 Runner 生成的终态信封，主 Codex 不再依赖模型自报的 `worker_claim` 或 `publishable`。
 - Worker 触碰运行前脏文件时记录重叠警告，交由主 Codex 针对性复核，不再仅因此强制失败。
 - 保留 PowerShell 7、Job Object、硬超时、进程树清理、Git HEAD/index 门禁、同工作树协调、Key 隔离和默认禁网。
 
-完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)。当前固定安装包请使用 [v0.3.0-rc1 Release](../../releases/tag/v0.3.0-rc1) 中的 ZIP 与 `SHA256SUMS.txt`。
+完整中文说明见 [README.zh-CN.md](README.zh-CN.md)，全部版本记录见 [CHANGELOG.md](CHANGELOG.md)。当前固定安装包请使用 [v0.3.1-rc1 Release](../../releases/tag/v0.3.1-rc1) 中的 ZIP 与 `SHA256SUMS.txt`。
 
 ## Problem
 
@@ -96,7 +98,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\Set-DeepSeekKey.ps1"
 
 The installer does not call the network and never accepts a key on the command line. `Set-DeepSeekKey.ps1` prompts with a masked `Read-Host -AsSecureString` and writes a restricted-ACL key file.
 
-For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.3.0-rc1 release](../../releases/tag/v0.3.0-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
+For a reproducible install, download the versioned ZIP and `SHA256SUMS.txt` from the [v0.3.1-rc1 release](../../releases/tag/v0.3.1-rc1), verify the checksum, extract it, and run the same installer commands from the extracted directory. Avoid installing from a floating branch when reproducibility matters.
 
 Check health and plan a run:
 
@@ -193,6 +195,8 @@ pwsh ./scripts/Install-DeepSeekWorker.ps1 -Force
 ```
 
 `-Force` performs a staged upgrade, records hashes in `installed-manifest.json`, and preserves the replaced managed files in a timestamped manual-rollback backup under the install root. Failed installation transactions attempt automatic rollback; a successful upgrade leaves the backup for manual recovery. The key and run history are not part of the managed-file replacement set. When using custom `CODEX_HOME`, worker root, or portable PowerShell paths, set the same environment variables during upgrade and uninstall.
+
+The Skill always invokes the current installed Runner by exact path. If an older release left a product-owned `%APPDATA%\npm\codex-deepseek-exec.ps1`, a `-Force` upgrade backs it up and replaces it with a thin forwarder. An unrecognized script at that path is never overwritten.
 
 Uninstall:
 

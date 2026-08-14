@@ -7,8 +7,8 @@
 | Codex CLI | `0.147.0` |
 | Model | `deepseek-v4-flash` |
 | Provider wire API | `responses` |
-| Release candidate | `0.3.0-rc1` / runner contract `4` |
-| Date | 2026-08-13 |
+| Release candidate | `0.3.1-rc1` / runner contract `4` |
+| Date | 2026-08-14 |
 | Platform | Windows |
 
 This is a community verification. It does not imply OpenAI or DeepSeek endorsement, and future CLI or API changes may require config updates.

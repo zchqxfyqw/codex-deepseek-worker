@@ -44,6 +44,26 @@ function Assert-SafeTarget {
     return $resolved
 }
 
+$legacyNpmRunnerPath = if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+    Join-Path $env:APPDATA 'npm\codex-deepseek-exec.ps1'
+}
+else { $null }
+$managedLegacyEntry = $null
+$installedManifestPath = Join-Path $installRoot 'installed-manifest.json'
+if (-not [string]::IsNullOrWhiteSpace($legacyNpmRunnerPath) -and
+    (Test-Path -LiteralPath $installedManifestPath -PathType Leaf)) {
+    try {
+        $installedManifest = Get-Content -LiteralPath $installedManifestPath -Raw | ConvertFrom-Json
+        $legacyFullPath = [System.IO.Path]::GetFullPath($legacyNpmRunnerPath)
+        $managedLegacyEntry = @($installedManifest.installed_files | Where-Object {
+            [System.IO.Path]::GetFullPath([string]$_.path) -eq $legacyFullPath
+        }) | Select-Object -First 1
+    }
+    catch {
+        Write-Warning "Could not inspect the installed manifest for the legacy npm entry: $($_.Exception.Message)"
+    }
+}
+
 $installedFiles = @(
     (Join-Path $installRoot 'codex-deepseek.ps1'),
     (Join-Path $installRoot 'codex-deepseek-exec.ps1'),
@@ -61,6 +81,19 @@ foreach ($target in $installedFiles) {
         if ($PSCmdlet.ShouldProcess($resolved, 'Remove installed file')) {
             Remove-Item -LiteralPath $resolved -Force
         }
+    }
+}
+
+if ($null -ne $managedLegacyEntry -and (Test-Path -LiteralPath $legacyNpmRunnerPath -PathType Leaf)) {
+    $actualLegacyHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $legacyNpmRunnerPath).Hash.ToLowerInvariant()
+    if ($actualLegacyHash -eq ([string]$managedLegacyEntry.sha256).ToLowerInvariant()) {
+        $resolvedLegacy = Assert-SafeTarget -Target $legacyNpmRunnerPath -Boundary (Join-Path $env:APPDATA 'npm')
+        if ($PSCmdlet.ShouldProcess($resolvedLegacy, 'Remove managed legacy compatibility entry')) {
+            Remove-Item -LiteralPath $resolvedLegacy -Force
+        }
+    }
+    else {
+        Write-Warning "The legacy npm entry was modified after installation and was preserved: $legacyNpmRunnerPath"
     }
 }
 

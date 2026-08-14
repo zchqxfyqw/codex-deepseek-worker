@@ -1,7 +1,7 @@
 interface:
   display_name: "DeepSeek Worker"
   short_description: "Delegate bounded work to DeepSeek V4 Flash"
-  default_prompt: "Use $deepseek-worker for this bounded task. Choose audit, implement, or quota-first from the request and risk, then judge the outcome from runner facts and treat summary.txt only as a concise model summary."
+  default_prompt: "Use $deepseek-worker for this bounded task. Invoke only the installed current Runner through PowerShell 7, choose audit, implement, or quota-first, inspect its bounded evidence, and stop on Worker failure unless the user explicitly authorizes takeover."
 
 policy:
   allow_implicit_invocation: false

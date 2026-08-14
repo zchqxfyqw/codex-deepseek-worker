@@ -39,6 +39,7 @@ function Push-WorkerTestEnvironment {
     $previous = [ordered]@{}
     $names = @(
         'LOCALAPPDATA',
+        'APPDATA',
         'CODEX_HOME',
         'CODEX_DEEPSEEK_WORKER_ROOT',
         'CODEX_DEEPSEEK_CODEX_PATH',
@@ -63,6 +64,7 @@ function Push-WorkerTestEnvironment {
         }
     }
     $env:LOCALAPPDATA = Join-Path $BasePath 'localappdata'
+    $env:APPDATA = Join-Path $BasePath 'appdata'
     $env:CODEX_HOME = Join-Path $BasePath 'codexhome'
     $env:CODEX_DEEPSEEK_WORKER_ROOT = Join-Path $BasePath 'workerroot'
     return $previous
@@ -256,7 +258,7 @@ Invoke-Check -Name 'Skill openai.yaml' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.3.0-rc1') { throw 'Unexpected release version.' }
+    if ($manifest.product_version -ne '0.3.1-rc1') { throw 'Unexpected release version.' }
     if ([int]$manifest.runner_contract_version -ne 4) {
         throw 'Release runner contract is not pinned to v4.'
     }
@@ -265,6 +267,9 @@ Invoke-Check -Name 'Release manifest contract' -Check {
     }
     if (($manifest.managed_files -join '|') -match 'delegation-result\.schema\.json') {
         throw 'Release manifest still manages the removed model-result schema.'
+    }
+    if (@($manifest.managed_files) -notcontains 'scripts/codex-deepseek-legacy-shim.ps1') {
+        throw 'Release manifest does not include the legacy compatibility shim source.'
     }
     if (@($manifest.supported_codex_cli_versions) -notcontains '0.147.0') {
         throw 'Release manifest does not declare the verified Codex CLI version.'
@@ -306,11 +311,13 @@ Invoke-Check -Name 'Installer dry-run' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-dryrun-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previousLocal = $env:LOCALAPPDATA
+    $previousAppData = $env:APPDATA
     $previousCodexHome = $env:CODEX_HOME
     $previousWorkerRoot = $env:CODEX_DEEPSEEK_WORKER_ROOT
     $previousPowerShell7 = $env:CODEX_DEEPSEEK_PWSH_PATH
     try {
         $env:LOCALAPPDATA = Join-Path $tempBase 'localappdata'
+        $env:APPDATA = Join-Path $tempBase 'appdata'
         $env:CODEX_HOME = Join-Path $tempBase 'codexhome'
         $env:CODEX_DEEPSEEK_WORKER_ROOT = Join-Path $tempBase 'workerroot'
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -WhatIf *> $null
@@ -327,6 +334,7 @@ Invoke-Check -Name 'Installer dry-run' -Check {
     }
     finally {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }
+        if ($null -eq $previousAppData) { Remove-Item Env:APPDATA -ErrorAction SilentlyContinue } else { $env:APPDATA = $previousAppData }
         if ($null -eq $previousCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $previousCodexHome }
         if ($null -eq $previousWorkerRoot) { Remove-Item Env:CODEX_DEEPSEEK_WORKER_ROOT -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_WORKER_ROOT = $previousWorkerRoot }
         if ($null -eq $previousPowerShell7) { Remove-Item Env:CODEX_DEEPSEEK_PWSH_PATH -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_PWSH_PATH = $previousPowerShell7 }
@@ -338,10 +346,12 @@ Invoke-Check -Name 'Installer temp install' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-install-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previousLocal = $env:LOCALAPPDATA
+    $previousAppData = $env:APPDATA
     $previousCodexHome = $env:CODEX_HOME
     $previousWorkerRoot = $env:CODEX_DEEPSEEK_WORKER_ROOT
     try {
         $env:LOCALAPPDATA = Join-Path $tempBase 'localappdata'
+        $env:APPDATA = Join-Path $tempBase 'appdata'
         $env:CODEX_HOME = Join-Path $tempBase 'codexhome'
         $env:CODEX_DEEPSEEK_WORKER_ROOT = Join-Path $tempBase 'workerroot'
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
@@ -376,6 +386,7 @@ Invoke-Check -Name 'Installer temp install' -Check {
     }
     finally {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }
+        if ($null -eq $previousAppData) { Remove-Item Env:APPDATA -ErrorAction SilentlyContinue } else { $env:APPDATA = $previousAppData }
         if ($null -eq $previousCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $previousCodexHome }
         if ($null -eq $previousWorkerRoot) { Remove-Item Env:CODEX_DEEPSEEK_WORKER_ROOT -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_WORKER_ROOT = $previousWorkerRoot }
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
@@ -416,6 +427,30 @@ Invoke-Check -Name 'Installer trusts packaged source commit outside Git' -Check 
     }
 }
 
+Invoke-Check -Name 'Installer preserves an unrecognized npm script' -Check {
+    $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-custom-npm-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tempBase | Out-Null
+    $previous = Push-WorkerTestEnvironment -BasePath $tempBase
+    try {
+        $legacyRunner = Join-Path $env:APPDATA 'npm\codex-deepseek-exec.ps1'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $legacyRunner) -Force | Out-Null
+        $customText = 'Write-Output custom-user-script'
+        [System.IO.File]::WriteAllText($legacyRunner, $customText)
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        if ((Get-Content -LiteralPath $legacyRunner -Raw) -ne $customText) {
+            throw 'Installer overwrote an unrecognized npm script.'
+        }
+        $installed = Get-Content -LiteralPath (Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'installed-manifest.json') -Raw | ConvertFrom-Json
+        if (@($installed.installed_files.path) -contains $legacyRunner) {
+            throw 'Installer claimed an unrecognized npm script as managed.'
+        }
+    }
+    finally {
+        Pop-WorkerTestEnvironment -Previous $previous
+        Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-upgrade-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
@@ -423,11 +458,14 @@ Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
     try {
         & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
         $launcher = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'codex-deepseek.ps1'
+        $legacyRunner = Join-Path $env:APPDATA 'npm\codex-deepseek-exec.ps1'
         $obsoleteInstallSchema = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'assets\delegation-result.schema.json'
         $obsoleteSkillSchema = Join-Path $env:CODEX_HOME 'skills\deepseek-worker\assets\delegation-result.schema.json'
         $keyPath = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'
         $runMarker = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'runs\upgrade-preserve.marker'
         Add-Content -LiteralPath $launcher -Value '# local-upgrade-marker'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $legacyRunner) -Force | Out-Null
+        [System.IO.File]::WriteAllText($legacyRunner, 'CodexDeepSeekWorkerLocks codex-deepseek.ps1 delegation-result.schema.json --output-schema')
         New-Item -ItemType Directory -Path (Split-Path -Parent $obsoleteInstallSchema) -Force | Out-Null
         New-Item -ItemType Directory -Path (Split-Path -Parent $obsoleteSkillSchema) -Force | Out-Null
         New-Item -ItemType Directory -Path (Split-Path -Parent $runMarker) -Force | Out-Null
@@ -449,6 +487,14 @@ Invoke-Check -Name 'Installer transactional upgrade backup' -Check {
         if ((Get-Content -LiteralPath $launcher -Raw) -match 'local-upgrade-marker') {
             throw 'Upgrade did not install the staged release launcher.'
         }
+        $legacyBackup = @($restoreMap | Where-Object { $_.destination -eq $legacyRunner }) | Select-Object -First 1
+        if ($null -eq $legacyBackup) { throw 'Upgrade backup omitted the recognized legacy npm runner.' }
+        $legacyShimText = Get-Content -LiteralPath $legacyRunner -Raw
+        if ($legacyShimText -notmatch 'CodexDeepSeekWorker' -or $legacyShimText -match 'delegation-result\.schema\.json') {
+            throw 'Upgrade did not replace the legacy npm runner with the compatibility shim.'
+        }
+        $installedLegacy = @($installed.installed_files | Where-Object { $_.path -eq $legacyRunner }) | Select-Object -First 1
+        if ($null -eq $installedLegacy) { throw 'Installed manifest omitted the managed legacy compatibility entry.' }
         if ((Test-Path -LiteralPath $obsoleteInstallSchema) -or (Test-Path -LiteralPath $obsoleteSkillSchema)) {
             throw 'Upgrade did not remove the obsolete model-result schema.'
         }
@@ -474,13 +520,18 @@ Invoke-Check -Name 'Uninstaller preserves sensitive state by default' -Check {
     $tempBase = Join-Path ([System.IO.Path]::GetTempPath()) ('dsw-uninstall-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempBase | Out-Null
     $previousLocal = $env:LOCALAPPDATA
+    $previousAppData = $env:APPDATA
     $previousCodexHome = $env:CODEX_HOME
     $previousWorkerRoot = $env:CODEX_DEEPSEEK_WORKER_ROOT
     try {
         $env:LOCALAPPDATA = Join-Path $tempBase 'localappdata'
+        $env:APPDATA = Join-Path $tempBase 'appdata'
         $env:CODEX_HOME = Join-Path $tempBase 'codexhome'
         $env:CODEX_DEEPSEEK_WORKER_ROOT = Join-Path $tempBase 'workerroot'
-        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') *> $null
+        $legacyRunner = Join-Path $env:APPDATA 'npm\codex-deepseek-exec.ps1'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $legacyRunner) -Force | Out-Null
+        [System.IO.File]::WriteAllText($legacyRunner, 'CodexDeepSeekWorkerLocks codex-deepseek.ps1 delegation-result.schema.json --output-schema')
+        & (Join-Path $repoRoot 'scripts\Install-DeepSeekWorker.ps1') -Force *> $null
 
         $keyPath = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'deepseek-api-key.txt'
         $runMarker = Join-Path $env:CODEX_DEEPSEEK_WORKER_ROOT 'runs\preserve.marker'
@@ -505,9 +556,13 @@ Invoke-Check -Name 'Uninstaller preserves sensitive state by default' -Check {
         if (Test-Path -LiteralPath (Join-Path $env:CODEX_HOME 'skills\deepseek-worker') -PathType Container) {
             throw 'Default uninstall did not remove the installed skill.'
         }
+        if (Test-Path -LiteralPath $legacyRunner -PathType Leaf) {
+            throw 'Default uninstall did not remove the managed legacy compatibility entry.'
+        }
     }
     finally {
         if ($null -eq $previousLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $previousLocal }
+        if ($null -eq $previousAppData) { Remove-Item Env:APPDATA -ErrorAction SilentlyContinue } else { $env:APPDATA = $previousAppData }
         if ($null -eq $previousCodexHome) { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } else { $env:CODEX_HOME = $previousCodexHome }
         if ($null -eq $previousWorkerRoot) { Remove-Item Env:CODEX_DEEPSEEK_WORKER_ROOT -ErrorAction SilentlyContinue } else { $env:CODEX_DEEPSEEK_WORKER_ROOT = $previousWorkerRoot }
         Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue

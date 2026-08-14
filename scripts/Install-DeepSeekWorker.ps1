@@ -31,6 +31,22 @@ function Get-Sha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Test-ProductOwnedLegacyRunner {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    $isLegacyRunner = $text.Contains('CodexDeepSeekWorkerLocks') -and
+        $text.Contains('codex-deepseek.ps1') -and
+        ($text.Contains('delegation-result.schema.json') -or $text.Contains('--output-schema'))
+    $isCompatibilityShim = $text.Contains('CodexDeepSeekWorker') -and
+        $text.Contains('codex-deepseek-exec.ps1') -and
+        $text.Contains('CODEX_DEEPSEEK_PWSH_PATH')
+    return ($isLegacyRunner -or $isCompatibilityShim)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $installRoot = if ($env:CODEX_DEEPSEEK_WORKER_ROOT) {
     [System.IO.Path]::GetFullPath($env:CODEX_DEEPSEEK_WORKER_ROOT)
@@ -71,6 +87,17 @@ $fileSpecs = @(
     @{ Source = Join-Path $repoRoot 'config\deepseek-v4-flash.models.json.example'; Destination = $modelCatalogPath },
     @{ Source = $releaseManifestSource; Destination = Join-Path $installRoot 'release-manifest.json' }
 )
+$legacyNpmRunnerPath = if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+    Join-Path $env:APPDATA 'npm\codex-deepseek-exec.ps1'
+}
+else { $null }
+$legacyRunnerIsProductOwned = Test-ProductOwnedLegacyRunner -Path $legacyNpmRunnerPath
+if ($legacyRunnerIsProductOwned) {
+    $fileSpecs += @{
+        Source = Join-Path $repoRoot 'scripts\codex-deepseek-legacy-shim.ps1'
+        Destination = $legacyNpmRunnerPath
+    }
+}
 $profileTemplate = Join-Path $repoRoot 'config\deepseek-worker.config.toml.example'
 $skillSource = Join-Path $repoRoot 'skill\deepseek-worker'
 
@@ -236,5 +263,9 @@ if (-not $installSucceeded) { throw 'DeepSeek Worker installation did not comple
 Write-Host "DeepSeek Worker $($releaseManifest.product_version) installed to: $installRoot"
 Write-Host "Skill installed to: $skillDest"
 Write-Host "Profile config installed to: $profilePath"
+if ($legacyRunnerIsProductOwned) { Write-Host "Legacy npm entry redirected to the current Runner: $legacyNpmRunnerPath" }
+elseif (-not [string]::IsNullOrWhiteSpace($legacyNpmRunnerPath) -and (Test-Path -LiteralPath $legacyNpmRunnerPath -PathType Leaf)) {
+    Write-Warning "An unrecognized npm script was preserved and will not be used by the installed Skill: $legacyNpmRunnerPath"
+}
 if ($existing.Count -gt 0) { Write-Host "Rollback backup: $backupRoot" }
 Write-Host "Next: run $installRoot\Set-DeepSeekKey.ps1, then -Doctor and -DryRun."

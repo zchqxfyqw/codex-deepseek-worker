@@ -1,6 +1,6 @@
 {
   "product": "codex-deepseek-worker",
-  "product_version": "0.3.0-rc1",
+  "product_version": "0.3.1-rc1",
   "runner_contract_version": 4,
   "adapter_id": "official-deepseek-codex",
   "adapter_version": 1,
@@ -10,6 +10,7 @@
   "managed_files": [
     "scripts/codex-deepseek.ps1",
     "scripts/codex-deepseek-exec.ps1",
+    "scripts/codex-deepseek-legacy-shim.ps1",
     "scripts/Set-DeepSeekKey.ps1",
     "scripts/Uninstall-DeepSeekWorker.ps1",
     "config/deepseek-v4-flash.models.json.example",

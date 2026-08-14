@@ -8,9 +8,11 @@ Codex DeepSeek Worker 是一个 Windows PowerShell 封装，让主 Codex 会话�
 
 本工具不会自动调用 DeepSeek，不修改主 Codex 的默认模型，也不会自动扩大权限。若手工指定 `-ResultFile` 或 `-RunRoot`，路径必须位于受协调工作树之外，避免 Runner 制品成为项目变更。
 
-## v0.3-lite 的取舍
+## v0.3.1-rc1 的取舍
 
-`v0.3.0-rc1` 保留原有 `$deepseek-worker` 调用方式和 `audit`、`implement`、`quota-first` 三种模式，但删除模型端最终 JSON Schema。`runner_state` 由进程退出、超时、清理与 Git 硬边界判定；命令证据用于主 Codex 业务验收，中途某条命令失败不会单独改写最终进程状态。`summary.txt` 只是普通文本或 Markdown 摘要，缺失或格式变化不会把成功执行误拒绝。`-ResultFile` 在所有终态写入 Runner 生成的终态信封。
+`v0.3.1-rc1` 固定从安装目录调用当前 Runner，不再从 `PATH` 或旧 `%APPDATA%\npm` 入口解析。升级时只会识别并备份本项目旧 Runner，再替换成薄兼容转发器；其他用户脚本不会被覆盖。
+
+它继续保留 `$deepseek-worker` 调用方式和 `audit`、`implement`、`quota-first` 三种模式，并沿用 v0.3 的精简终态契约。`runner_state` 由进程退出、超时、清理与 Git 硬边界判定；命令证据用于主 Codex 业务验收，中途某条命令失败不会单独改写最终进程状态。`summary.txt` 只是普通文本或 Markdown 摘要，缺失或格式变化不会把成功执行误拒绝。`-ResultFile` 在所有终态写入 Runner 生成的终态信封。
 
 Worker 若触碰运行前已有脏文件，Runner 会记录重叠警告并交由主 Codex 针对性复核，不再仅因重叠强制失败。PowerShell 7、Job Object、硬超时、进程树清理、Git HEAD/index 门禁、同工作树协调、Key 隔离和默认禁网仍保留。
 
@@ -46,7 +48,7 @@ pwsh "$env:LOCALAPPDATA\CodexDeepSeekWorker\codex-deepseek-exec.ps1" -Workdir . 
 
 安装后的 Worker profile 使用 Codex 首选的 `elevated` Windows 沙箱，以可靠写入工作区；首次使用可能需要完成一次原生沙箱初始化，但这不等于用管理员身份运行 Codex。探针只会在工作树根创建、读回并删除一个随机命名的临时文件；失败即停止，不会自动修改 ACL。
 
-需要可复现安装时，请从 [v0.3.0-rc1 Release](../../releases/tag/v0.3.0-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`；不要把开发分支当作固定安装包。
+需要可复现安装时，请从 [v0.3.1-rc1 Release](../../releases/tag/v0.3.1-rc1) 下载版本固定的 ZIP 与 `SHA256SUMS.txt`；不要把开发分支当作固定安装包。
 
 如需使用企业托管或自定义位置的受限密钥文件，可设置 `CODEX_DEEPSEEK_KEY_FILE`；该变量只包含文件路径，不包含密钥值。
 
