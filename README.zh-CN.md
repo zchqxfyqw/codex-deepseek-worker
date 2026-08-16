@@ -12,7 +12,7 @@ Codex DeepSeek Worker 是一个 Windows PowerShell 封装，让主 Codex 会话�
 
 `v0.3.1-rc1` 固定从安装目录调用当前 Runner，不再从 `PATH` 或旧 `%APPDATA%\npm` 入口解析。升级时只会识别并备份本项目旧 Runner，再替换成薄兼容转发器；其他用户脚本不会被覆盖。
 
-它继续保留 `$deepseek-worker` 调用方式和 `audit`、`implement`、`quota-first` 三种模式，并沿用 v0.3 的精简终态契约。`runner_state` 由进程退出、超时、清理与 Git 硬边界判定；命令证据用于主 Codex 业务验收，中途某条命令失败不会单独改写最终进程状态。`summary.txt` 只是普通文本或 Markdown 摘要，缺失或格式变化不会把成功执行误拒绝。`-ResultFile` 在所有终态写入 Runner 生成的终态信封。
+它继续保留 `$deepseek-worker` 调用方式和 `audit`、`implement`、`quota-first` 三种模式，并沿用 v0.3 的精简终态契约。`runner_state` 由进程退出、超时、清理与 Git 硬边界判定；`completed` 只表示执行完成，不等于业务验收通过。命令证据用于主 Codex 业务验收，中途某条命令失败不会单独改写最终进程状态。`summary.txt` 只是普通文本或 Markdown 摘要，缺失或格式变化不会把成功执行误拒绝。`-ResultFile` 在所有终态写入 Runner 生成的终态信封。
 
 Worker 若触碰运行前已有脏文件，Runner 会记录重叠警告并交由主 Codex 针对性复核，不再仅因重叠强制失败。PowerShell 7、Job Object、硬超时、进程树清理、Git HEAD/index 门禁、同工作树协调、Key 隔离和默认禁网仍保留。
 

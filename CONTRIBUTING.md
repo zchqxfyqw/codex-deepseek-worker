@@ -7,6 +7,7 @@ Thanks for helping improve the DeepSeek Worker. This project is a public candida
 - Do not commit personal usernames, absolute local paths, API keys, tokens, logs, run artifacts, session data, or other user content.
 - Keep the skill package lean: `skill/deepseek-worker` contains only `SKILL.md` and `agents/openai.yaml`. User-facing docs live in the repository root or `docs/`.
 - Preserve the runner invariants: default read-only/no-network/ephemeral, audit/implement/quota-first, Git before/after attribution, same-worktree locking, PID+start-time identity, 45-minute timeout with process-tree termination, no automatic retries, no silent model/provider fallback, Runner-authoritative terminal envelopes, and compact evidence bundling.
+- Do not add an abstraction, state, protocol, fallback, or recovery path without a demonstrated failure or acceptance requirement. Prefer deleting or simplifying an existing mechanism, and report the net change in states, branches, managed files, and rollback paths.
 - Do not add network calls to the installer or CI. CI must be offline static checks without API keys.
 
 ## Development workflow

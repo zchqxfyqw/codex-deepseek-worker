@@ -30,7 +30,7 @@ $deepseek-worker 使用 quota-first 完整完成这个有边界的任务：自�
 
 Main Codex sessions are convenient for open-ended work, but every turn consumes model quota. A bounded task such as "read this module and list the risks", "implement this one change", or "run the offline tests and summarize" does not need to consume premium main-model context. This project runs those tasks in a separate, cheaper worker session and returns compact runner evidence plus a short model summary that the main session can verify instead of repeating the work.
 
-The runner is intentionally not a general-purpose remote agent. It does not call DeepSeek automatically, does not change the main Codex default model, and does not widen permissions. Optional `-ResultFile` and `-RunRoot` paths must be outside the coordinated worktree so Runner artifacts cannot become project changes.
+The runner is intentionally not a general-purpose remote agent. It does not call DeepSeek automatically, does not change the main Codex default model, and does not widen permissions. A `completed` runner state means execution completed, not that task acceptance passed. Optional `-ResultFile` and `-RunRoot` paths must be outside the coordinated worktree so Runner artifacts cannot become project changes.
 
 ## Architecture
 

@@ -243,6 +243,12 @@ Invoke-Check -Name 'Skill frontmatter' -Check {
     if ($skillText -notmatch '\$deepseek-worker') {
         throw 'SKILL.md does not reference $deepseek-worker.'
     }
+    if ($skillText -notmatch 'completed.*not that the task passed acceptance') {
+        throw 'SKILL.md does not distinguish runner completion from task acceptance.'
+    }
+    if ($skillText -notmatch 'never repair ACLs') {
+        throw 'SKILL.md does not forbid ACL repair after a pre-run access failure.'
+    }
 }
 
 Invoke-Check -Name 'Skill openai.yaml' -Check {

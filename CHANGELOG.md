@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Clarify that `runner_state=completed` is an execution fact rather than task acceptance, and direct pre-run access failures to an approved host PowerShell invocation without ACL repair.
+- Add a deletion-first complexity budget for future Runner changes without adding runtime mechanisms.
+
 ## [0.3.1-rc1] - 2026-08-14
 
 ### Fixed
