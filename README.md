@@ -1,10 +1,10 @@
 # Codex DeepSeek Worker
 
-Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI instance delegate bounded, well-scoped tasks to a separate DeepSeek V4 Flash worker session. It is a community integration for [Codex CLI](https://github.com/openai/codex), not an OpenAI or DeepSeek product.
+Codex DeepSeek Worker is a Windows PowerShell wrapper that lets a main Codex CLI instance delegate bounded, well-scoped tasks to a separate DeepSeek V4.1 Flash worker session. It is a community integration for [Codex CLI](https://github.com/openai/codex), not an OpenAI or DeepSeek product.
 
 ## 中文简介
 
-`$deepseek-worker` 是一个显式调用的 Codex Skill：主 Codex 负责理解目标、划定权限和最终验收，DeepSeek V4 Flash 通过独立 Codex CLI 进程完成边界明确的检索、编码、测试和自审，再返回紧凑、可核验的证据包。它适合把大量常规执行交给成本较低的模型，同时保留 Codex 的工作区、沙箱、Git 归因和质量把关能力。
+`$deepseek-worker` 是一个显式调用的 Codex Skill：主 Codex 负责理解目标、划定权限和最终验收，DeepSeek V4.1 Flash 通过独立 Codex CLI 进程完成边界明确的检索、编码、测试和自审，再返回紧凑、可核验的证据包。它适合把大量常规执行交给成本较低的模型，同时保留 Codex 的工作区、沙箱、Git 归因和质量把关能力。
 
 它不会修改 Codex Desktop 的默认模型，也不会静默回退到 OpenAI 或其他 Provider。默认只读、工具禁网、会话不持久化；写入和联网必须按任务明确授权。生产写入、数据库迁移、部署、凭据和重大安全决策仍由主 Codex 直接处理。
 
@@ -75,9 +75,11 @@ This repository is a community integration verified on:
 - Codex CLI `0.147.0`
 - DeepSeek V4 Flash (`deepseek-v4-flash`) through the DeepSeek Responses-compatible endpoint
 
+Local update on 2026-09-18: configure `deepseek-flash` (currently V4.1 Flash), `max` reasoning and text/image input. Offline checks pass; live API and image validation remain pending. Runner contract and permissions are unchanged.
+
 It is not an official OpenAI or DeepSeek integration, and OpenAI does not endorse this project. The profile and model catalog ship as templates, so behavior may change with future Codex CLI or DeepSeek API changes. See [docs/verification.md](docs/verification.md) for the offline checks.
 
-DeepSeek's public changelog currently documents V4 Flash through its OpenAI Chat Completions and Anthropic-compatible interfaces. The `wire_api = "responses"` path in this project is therefore described as observed, tested Codex compatibility rather than a promise of general Responses API support. Re-run the release smoke test whenever Codex CLI or the DeepSeek API changes.
+DeepSeek now documents native [Responses API support](https://api-docs.deepseek.com/guides/responses_api/). Provider support does not replace this integration's live smoke tests after model or CLI changes.
 
 ## Quick Start
 

@@ -197,8 +197,8 @@ function Get-PackageMetadata {
     if ($manifest.PSObject.Properties.Name -contains 'provider' -and [string]$manifest.provider -ne 'deepseek-worker-secure') {
         $manifestErrors.Add('Package manifest provider is not deepseek-worker-secure.')
     }
-    if ($manifest.PSObject.Properties.Name -contains 'model' -and [string]$manifest.model -ne 'deepseek-v4-flash') {
-        $manifestErrors.Add('Package manifest model is not deepseek-v4-flash.')
+    if ($manifest.PSObject.Properties.Name -contains 'model' -and [string]$manifest.model -ne 'deepseek-flash') {
+        $manifestErrors.Add('Package manifest model is not deepseek-flash.')
     }
 
     $hashErrors = New-Object System.Collections.Generic.List[string]
@@ -636,7 +636,7 @@ function Get-DoctorResult {
     $keyFileExists = Test-Path -LiteralPath $paths.KeyFile -PathType Leaf
     $skillExists = Test-Path -LiteralPath $paths.SkillPath -PathType Leaf
     $modelCatalogExists = Test-Path -LiteralPath $paths.ModelCatalog -PathType Leaf
-    $modelPinned = [bool]($profileText -match '(?m)^model\s*=\s*"deepseek-v4-flash"')
+    $modelPinned = [bool]($profileText -match '(?m)^model\s*=\s*"deepseek-flash"')
     $responsesApi = [bool]($profileText -match '(?m)^wire_api\s*=\s*"responses"')
     $envKeyProvider = [bool]($profileText -match '(?m)^env_key\s*=\s*"DEEPSEEK_API_KEY"')
     $cliVersionNumber = if ($version -match '(\d+\.\d+\.\d+)') { $Matches[1] } else { $null }
@@ -1010,7 +1010,7 @@ if ($DryRun) {
         prompt_length = $Prompt.Length
         prompt_sha256 = Get-Sha256Text -Text $Prompt
         correlation_id = $CorrelationId
-        model = 'deepseek-v4-flash'
+        model = 'deepseek-flash'
         provider = 'deepseek-worker-secure'
         product_version = $productVersion
         source_commit = $sourceCommit
@@ -1070,7 +1070,7 @@ $status = [ordered]@{
     powershell7_path = $powerShell7.Path
     powershell7_version = $powerShell7.Version
     provider = 'deepseek-worker-secure'
-    model = 'deepseek-v4-flash'
+    model = 'deepseek-flash'
     started_at_utc = $null
     ended_at_utc = $null
     process_id = $null

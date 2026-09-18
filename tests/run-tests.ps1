@@ -97,6 +97,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:DSW_FAKE_RUNTIME_CAPTURE)) {
         version = $PSVersionTable.PSVersion.ToString()
         pshome = $PSHOME
         path_first = @($env:PATH -split ';')[0]
+        arguments = @($Rest)
     } | ConvertTo-Json -Compress
     [System.IO.File]::WriteAllText($env:DSW_FAKE_RUNTIME_CAPTURE, $runtimeCapture, [System.Text.UTF8Encoding]::new($false))
 }
@@ -264,7 +265,7 @@ Invoke-Check -Name 'Skill openai.yaml' -Check {
 Invoke-Check -Name 'Release manifest contract' -Check {
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'release-manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.product -ne 'codex-deepseek-worker') { throw 'Unexpected release product id.' }
-    if ($manifest.product_version -ne '0.3.1-rc1') { throw 'Unexpected release version.' }
+    if ($manifest.product_version -ne '0.3.2-local') { throw 'Unexpected release version.' }
     if ([int]$manifest.runner_contract_version -ne 4) {
         throw 'Release runner contract is not pinned to v4.'
     }
@@ -672,8 +673,18 @@ Invoke-Check -Name 'Config template placeholder' -Check {
     if ($configText -notmatch '\{\{MODEL_CATALOG_PATH\}\}') {
         throw 'Profile template is missing the model catalog path placeholder.'
     }
-    if ($configText -notmatch '(?m)^model\s*=\s*"deepseek-v4-flash"') {
-        throw 'Profile template does not pin deepseek-v4-flash.'
+    if ($configText -notmatch '(?m)^model\s*=\s*"deepseek-flash"') {
+        throw 'Profile template does not pin deepseek-flash.'
+    }
+    if ($configText -notmatch '(?m)^model_reasoning_effort\s*=\s*"max"') {
+        throw 'Profile template must default to max reasoning.'
+    }
+    $catalog = Get-Content -LiteralPath (Join-Path $repoRoot 'config\deepseek-v4-flash.models.json.example') -Raw | ConvertFrom-Json
+    $model = $catalog.models[0]
+    if ($model.slug -ne 'deepseek-flash' -or $model.default_reasoning_level -ne 'max' -or
+        (@($model.supported_reasoning_levels.effort) -join ',') -ne 'low,high,max' -or
+        (@($model.input_modalities) -join ',') -ne 'text,image') {
+        throw 'Model catalog must declare Flash, max reasoning and text/image input consistently.'
     }
     if ($configText -notmatch '(?ms)^\[windows\]\s*\r?\nsandbox\s*=\s*"elevated"') {
         throw 'Profile template does not use the Windows elevated sandbox required for workspace writes.'
@@ -742,7 +753,7 @@ Invoke-Check -Name 'Runner dry-run' -Check {
         -Mode audit `
         -DryRun | ConvertFrom-Json
     if ($dry.dry_run -ne $true) { throw 'Dry-run did not return dry_run=true.' }
-    if ($dry.model -ne 'deepseek-v4-flash') { throw 'Dry-run did not pin deepseek-v4-flash.' }
+    if ($dry.model -ne 'deepseek-flash') { throw 'Dry-run did not pin deepseek-flash.' }
     if ($dry.provider -ne 'deepseek-worker-secure') { throw 'Dry-run did not pin the provider.' }
     if ($dry.network -ne $false) { throw 'Dry-run did not default network to false.' }
     if ([version]$dry.powershell7_version -lt [version]'7.0' -or [string]$dry.powershell7_path -match '(?i)\\WindowsApps\\') {
@@ -922,6 +933,11 @@ Invoke-Check -Name 'Runner treats model output as a non-authoritative summary' -
         Remove-Item Env:DSW_FAKE_DESCENDANT_PID -ErrorAction SilentlyContinue
         Remove-Item Env:DSW_FAKE_DESCENDANT_LATE_FILE -ErrorAction SilentlyContinue
         $runtimeCapture = Get-Content -LiteralPath $runtimeCapturePath -Raw | ConvertFrom-Json
+        $modelArgIndex = [Array]::IndexOf([string[]]$runtimeCapture.arguments, '--model')
+        if ($modelArgIndex -lt 0 -or $runtimeCapture.arguments[$modelArgIndex + 1] -ne 'deepseek-flash' -or
+            $runtimeCapture.arguments -notcontains 'model_reasoning_effort="max"') {
+            throw 'Launcher did not pass deepseek-flash and max reasoning to the child CLI.'
+        }
         if ([version]$runtimeCapture.version -lt [version]'7.0') { throw 'Fake Codex did not run under PowerShell 7.' }
         if ([System.IO.Path]::GetFullPath($runtimeCapture.path_first) -ne [System.IO.Path]::GetFullPath($runtimeCapture.pshome)) { throw 'PowerShell 7 directory was not first in the child PATH.' }
         if ($env:PATH -ne $pathBefore) { throw 'Runner did not restore the parent PATH.' }

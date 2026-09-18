@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.2-local] - 2026-09-18
+
+- Use the official `deepseek-flash` API name (currently V4.1 Flash), with `max` reasoning pinned in the launcher and profile.
+- Declare text/image input and the official low/high/max reasoning levels in the model catalog.
+- Keep the default 2700-second task budget and wait asynchronously on the same process; missing final output alone is not a reason to terminate or redispatch.
+- Preserve Runner contract 4, permissions, lifecycle and acceptance rules. Local configuration update; live task validation is pending.
+
 ## [Unreleased]
 
 ### Changed

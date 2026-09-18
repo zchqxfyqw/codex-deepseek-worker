@@ -137,7 +137,8 @@ end {
         '--ask-for-approval', 'never'
     )
     $execFixedArguments = @(
-        '--model', 'deepseek-v4-flash',
+        '--model', 'deepseek-flash',
+        '-c', 'model_reasoning_effort="max"',
         '-c', 'model_provider="deepseek-worker-secure"',
         '-c', 'model_providers.deepseek-worker-secure.name="deepseek"',
         '-c', 'model_providers.deepseek-worker-secure.base_url="https://api.deepseek.com/"',

@@ -3,9 +3,9 @@
 # and replaces {{MODEL_CATALOG_PATH}} with the installed model catalog path.
 # This file only affects the `deepseek-worker` profile; it does not change your default Codex model.
 
-model = "deepseek-v4-flash"
+model = "deepseek-flash"
 model_provider = "deepseek-worker-secure"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "max"
 model_context_window = 1000000
 model_auto_compact_token_limit = 900000
 model_auto_compact_token_limit_scope = "body_after_prefix"

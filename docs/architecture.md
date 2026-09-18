@@ -4,7 +4,7 @@
 
 `codex-deepseek-exec.ps1` is the runner. It validates the workdir, resolves physical paths, checks Git state, acquires a per-worktree coordination lock, starts a child Codex CLI process, waits with a hard timeout, and writes run artifacts plus a Runner-generated terminal envelope.
 
-`codex-deepseek.ps1` is the launcher invoked by the runner's child process. It selects the dedicated `deepseek-worker` profile and pins `deepseek-v4-flash`, the provider, approval policy, disabled features, telemetry settings, and MCP disables at CLI priority. It reads the API key from a file and exposes it to the child only through `DEEPSEEK_API_KEY`.
+`codex-deepseek.ps1` is the launcher invoked by the runner's child process. It selects the dedicated `deepseek-worker` profile and pins `deepseek-flash`, the provider, approval policy, disabled features, telemetry settings, and MCP disables at CLI priority. It reads the API key from a file and exposes it to the child only through `DEEPSEEK_API_KEY`.
 
 The skill at `skill/deepseek-worker` gives the main Codex agent a concise invocation and review contract. The installed model catalog and full provider definition live in `$CODEX_HOME\deepseek-worker.config.toml`; the launcher pins the profile and all critical runtime choices so project configuration cannot silently select another model or provider.
 

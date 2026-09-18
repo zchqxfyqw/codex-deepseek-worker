@@ -1,11 +1,11 @@
 {
   "product": "codex-deepseek-worker",
-  "product_version": "0.3.1-rc1",
+  "product_version": "0.3.2-local",
   "runner_contract_version": 4,
   "adapter_id": "official-deepseek-codex",
   "adapter_version": 1,
   "provider": "deepseek-worker-secure",
-  "model": "deepseek-v4-flash",
+  "model": "deepseek-flash",
   "supported_codex_cli_versions": ["0.147.0"],
   "managed_files": [
     "scripts/codex-deepseek.ps1",
